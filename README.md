@@ -6,17 +6,17 @@ With its retro-inspired design and modern implementation, it provides a platform
 TriBoy is a conceptual handheld game console that leverages the power of multiple RP2040 (Raspberry Pi Pico) or RP2350 (Raspberry Pi Pico 2) microcontrollers in a unique Three Microcontroller Architecture (TMA).
 By dedicating separate microcontrollers to CPU (Central Processing Unit), GPU (Graphics Processing Unit), and APU (Audio Processing Unit) functions, TriBoy achieves 16-bit era gaming capabilities with modern implementation techniques. 
 
-- `CPU.md` goes over the CPU design details.
-- `GPU.md` goes over the GPU design details.
-- `APU.md` goes over the APU design details.
-- `CPU_Implementation.md` goes over the CPU design's implementation details.
-- `GPU_Implementation.md` goes over the GPU design's implementation details.
-- `APU_Implementation.md` goes over the APU design's implementation details.
 - `README.md` goes over the concept of the TriBoy and TMA at a high-level.
 - `Idea.md` goes over the ideas behind the concept for the TriBoy and TMA.
+- `CPU.md` goes over the CPU design details.
+- `CPU_Implementation.md` goes over the CPU design's implementation details.
+- `GPU.md` goes over the GPU design details.
+- `GPU_Implementation.md` goes over the GPU design's implementation details.
+- `APU.md` goes over the APU design details.
+- `APU_Implementation.md` goes over the APU design's implementation details.
+- `ExternalCartridgeSupport.md` goes over potential external cartridge support.
 
 ## Architecture Overview
-
 TriBoy employs a Three Microcontroller Architecture (TMA) where each microcontroller handles specific tasks:
 
 1. **CPU Microcontroller**: Game logic, asset management, input handling, and coordination
@@ -26,7 +26,6 @@ TriBoy employs a Three Microcontroller Architecture (TMA) where each microcontro
 Each microcontroller uses both cores of the RP2040/RP2350, with optimized memory allocation and communication protocols. This distributed approach allows each processor to focus on specialized tasks, aimed to provide performance similar to 16-bit consoles like the Sega Genesis. Actual performance is yet to be discovered. 
 
 ## CPU Microcontroller
-
 The CPU acts as the master controller, handling:
 
 ### Core Functions
@@ -66,7 +65,6 @@ void run_game_loop() {
 ```
 
 ## GPU Microcontroller
-
 The GPU handles all graphics rendering tasks:
 
 ### Core Features
@@ -107,7 +105,6 @@ void scroll_background(uint8_t layer_id, int16_t x, int16_t y) {
 ```
 
 ## APU Microcontroller
-
 The APU handles all audio tasks:
 
 ### Core Features
@@ -147,7 +144,6 @@ void play_music(uint8_t tracker_id) {
 ```
 
 ## Inter-Microcontroller Communication
-
 The three microcontrollers communicate through:
 
 ### Primary Communication
@@ -172,7 +168,6 @@ queue_t core1_to_core0_queue;
 ```
 
 ## Memory Allocation
-
 Memory allocation is optimized for both RP2040 (264KB) and RP2350 (520KB) models:
 
 ### CPU Memory (RP2040/RP2350)
@@ -195,7 +190,6 @@ Memory allocation is optimized for both RP2040 (264KB) and RP2350 (520KB) models
 - Working buffers: 40KB/72KB
 
 ## Game Development
-
 The TriBoy platform provides high-level APIs for game development:
 
 ### CPU APIs
@@ -228,7 +222,6 @@ typedef struct {
 ```
 
 ## Building a TriBoy
-
 To build a TriBoy system, you'll need:
 
 1. Three RP2040 (Raspberry Pi Pico) or Three RP2350 (Raspberry Pi Pico 2) microcontrollers
@@ -248,7 +241,6 @@ Hardware connections include:
 - Power distribution
 
 ## Potential Improvements
-
 While the TriBoy design is comprehensive, there are several areas for potential improvements:
 
 ### Technical Improvements
