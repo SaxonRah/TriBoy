@@ -13,6 +13,7 @@ By dedicating separate microcontrollers to CPU (Central Processing Unit), GPU (G
 - `GPU_Implementation.md` goes over the GPU design's implementation details.
 - `APU_Implementation.md` goes over the APU design's implementation details.
 - `README.md` goes over the concept of the TriBoy and TMA at a high-level.
+- `Idea.md` goes over the ideas behind the concept for the TriBoy and TMA at a lower-level.
 
 ## Architecture Overview
 
