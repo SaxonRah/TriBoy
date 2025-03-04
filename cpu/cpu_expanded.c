@@ -329,6 +329,24 @@ void process_apu_queue() {
     }
 }
 
+// Improved Command Queue Error Handling
+bool queue_command(CommandQueue* queue, uint8_t cmd_id, uint8_t length, const uint8_t* data) {
+    mutex_enter_blocking(&queue->lock);
+    if (queue->count >= queue->capacity) {
+        mutex_exit(&queue->lock);
+        send_error_to_cpu(ERROR_QUEUE_FULL);
+        return false;
+    }
+    Command* cmd = &queue->commands[queue->tail];
+    cmd->command_id = cmd_id;
+    cmd->length = length;
+    memcpy(cmd->data, data, length - 2);
+    queue->tail = (queue->tail + 1) % queue->capacity;
+    queue->count++;
+    mutex_exit(&queue->lock);
+    return true;
+}
+
 // Asset Management System
 // Asset types
 typedef enum {
@@ -781,6 +799,28 @@ bool send_asset_to_apu(AssetInfo* asset, uint8_t* data, uint32_t size) {
         // Queue command
         return queue_apu_command(cmd_id, header_size + size + 2, cmd_buffer);
     }
+}
+
+// QSPI Asset Loading Implementation
+bool load_game_qspi(GameInfo game) {
+    // Open game file on QSPI storage
+    FILE* game_file = open_qspi_game_file(game.filename);
+    if (!game_file) return false;
+
+    // Read game header
+    GameHeader header;
+    read_game_header(game_file, &header);
+
+    // Allocate memory for game code
+    void* game_code_memory = allocate_game_memory(header.code_size);
+    load_game_code(game_file, game_code_memory, header.code_size);
+
+    // Load assets into GPU & APU memory
+    load_gpu_assets_qspi(game_file, &header.gpu_assets);
+    load_apu_assets_qspi(game_file, &header.apu_assets);
+
+    close_file(game_file);
+    return true;
 }
 
 // Input Processing
