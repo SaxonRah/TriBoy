@@ -16,6 +16,8 @@ By dedicating separate microcontrollers to CPU (Central Processing Unit), GPU (G
 - `APU_Implementation.md` goes over the APU design's implementation details.
 - `ExternalCartridgeSupport.md` goes over potential external cartridge support.
 - `PracticalLimitations.md` goes over SPI bandwidth, frame timing, and command throughput.
+- `apu.c`, `cpu.c`, `gpu.c` are almost complete implementations of each microcontroller. (none compiled)
+- `example_implementation/apu_example.c`, `example_implementation/cpu_example.c`, `example_implementation/gpu_example.c` are very basic implementations of each microcontroller. (none compiled)
 
 ## Architecture Overview
 TriBoy employs a Three Microcontroller Architecture (TMA) where each microcontroller handles specific tasks:
