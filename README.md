@@ -6,7 +6,7 @@ With its retro-inspired design and modern implementation, it provides a platform
 TriBoy is a conceptual handheld game console that leverages the power of multiple RP2040 (Raspberry Pi Pico) or RP2350 (Raspberry Pi Pico 2) microcontrollers in a unique Three Microcontroller Architecture (TMA).
 By dedicating separate microcontrollers to CPU (Central Processing Unit), GPU (Graphics Processing Unit), and APU (Audio Processing Unit) functions, TriBoy achieves 16-bit era gaming capabilities with modern implementation techniques. 
 
-- `README.md` goes over the concept of the TriBoy and TMA at a high-level.
+Design Documents:
 - `Idea.md` goes over the ideas behind the concept for the TriBoy and TMA.
 - `CPU.md` goes over the CPU design details.
 - `CPU_Implementation.md` goes over the CPU design's implementation details.
@@ -16,6 +16,9 @@ By dedicating separate microcontrollers to CPU (Central Processing Unit), GPU (G
 - `APU_Implementation.md` goes over the APU design's implementation details.
 - `ExternalCartridgeSupport.md` goes over potential external cartridge support.
 - `PracticalLimitations.md` goes over SPI bandwidth, frame timing, and command throughput.
+  
+Root:
+- `README.md` goes over the concept of the TriBoy and TMA at a high-level.
 - `apu.c`, `cpu.c`, `gpu.c` are almost complete implementations of each microcontroller. (none compiled)
 
 ## Architecture Overview
