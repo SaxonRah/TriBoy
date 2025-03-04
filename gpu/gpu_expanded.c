@@ -168,6 +168,24 @@ void process_command(uint8_t cmd_id, const uint8_t* data, uint8_t length) {
     }
 }
 
+// Implementing VSYNC_WAIT Command
+void cmd_vsync_wait() {
+    while (!vsync_occurred) {
+        tight_loop_contents(); // Wait for next VSYNC
+    }
+    vsync_occurred = false;
+    send_ack_to_cpu(CMD_VSYNC_WAIT);
+}
+
+// Improved Memory Error Handling
+void* safe_malloc(size_t size) {
+    void* ptr = malloc(size);
+    if (!ptr) {
+        send_error_to_cpu(ERROR_OUT_OF_MEMORY);
+    }
+    return ptr;
+}
+
 // Background Layer and Tile System
 // Layer structure
 typedef struct {
@@ -245,7 +263,8 @@ void configure_layer(uint8_t layer_id, uint8_t enable, uint8_t priority,
     
     // Allocate tilemap
     uint32_t tilemap_size = width_tiles * height_tiles * sizeof(TileInfo);
-    layers[layer_id].tilemap = malloc(tilemap_size);
+    // layers[layer_id].tilemap = malloc(tilemap_size);
+    layers[layer_id].tilemap = safe_malloc(tilemap_size);
     
     if (layers[layer_id].tilemap == NULL) {
         send_error_to_cpu(ERROR_OUT_OF_MEMORY);
@@ -291,7 +310,8 @@ void load_tileset(uint8_t layer_id, uint16_t tile_start, uint16_t tile_count,
     
     if (compression == 1) {  // RLE compression
         // Allocate worst-case buffer for decompression
-        tile_data = malloc(tile_count * bytes_per_tile);
+        // tile_data = malloc(tile_count * bytes_per_tile);
+        tile_data = safe_malloc(tile_count * bytes_per_tile);
         if (tile_data == NULL) {
             send_error_to_cpu(ERROR_OUT_OF_MEMORY);
             return;
@@ -347,7 +367,8 @@ void load_tilemap(uint8_t layer_id, uint8_t x, uint8_t y, uint8_t width,
     
     if (compression == 1) {  // RLE compression
         // Allocate worst-case buffer for decompression
-        tilemap_data = malloc(expected_size);
+        // tilemap_data = malloc(expected_size);
+        tilemap_data = safe_malloc(expected_size);
         if (tilemap_data == NULL) {
             send_error_to_cpu(ERROR_OUT_OF_MEMORY);
             return;
@@ -488,7 +509,8 @@ void cache_tile(uint8_t layer_id, uint16_t tile_id, const uint8_t* data, uint32_
         tile_cache[slot].size = size;
         tile_cache[slot].last_used = frame_counter;
         
-        tile_cache[slot].data = malloc(size);
+        //tile_cache[slot].data = malloc(size);
+        tile_cache[slot].data = safe_malloc(size);
         if (tile_cache[slot].data != NULL) {
             memcpy(tile_cache[slot].data, data, size);
         }
@@ -502,7 +524,8 @@ void cache_tile(uint8_t layer_id, uint16_t tile_id, const uint8_t* data, uint32_
         tile_cache[slot].size = size;
         tile_cache[slot].last_used = frame_counter;
         
-        tile_cache[slot].data = malloc(size);
+        //tile_cache[slot].data = malloc(size);
+        tile_cache[slot].data = safe_malloc(size);
         if (tile_cache[slot].data != NULL) {
             memcpy(tile_cache[slot].data, data, size);
         }
@@ -599,7 +622,8 @@ void load_sprite_pattern(uint8_t pattern_id, uint8_t width, uint8_t height,
     
     if (compression == 1) {  // RLE compression
         // Allocate buffer for decompression
-        pattern_bytes = malloc(pattern_size);
+        // pattern_bytes = malloc(pattern_size);
+        pattern_bytes = safe_malloc(pattern_size);
         if (pattern_bytes == NULL) {
             send_error_to_cpu(ERROR_OUT_OF_MEMORY);
             return;
@@ -926,7 +950,8 @@ void garbage_collect_sprite_memory() {
 
 void compact_sprite_memory() {
     // Allocate temporary buffer
-    uint8_t* temp_buffer = malloc(sprite_data_used);
+    // uint8_t* temp_buffer = malloc(sprite_data_used);
+    uint8_t* temp_buffer = safe_malloc(sprite_data_used);
     if (temp_buffer == NULL) {
         return; // Can't compact without temporary space
     }
@@ -1152,7 +1177,8 @@ void apply_mosaic_effect(uint8_t* buffer, uint32_t width, uint32_t height) {
     // For 8-bit paletted mode
     if (display_bpp == 8) {
         // Create a temporary buffer for the result
-        uint8_t* temp = malloc(width * height);
+        //uint8_t* temp = malloc(width * height);
+        uint8_t* temp = safe_malloc(width * height);
         if (temp == NULL) return; // Not enough memory
         
         // Copy input buffer
@@ -1957,14 +1983,16 @@ int main() {
     }
     
     // Allocate framebuffer
-    framebuffer = malloc(framebuffer_size);
+    // framebuffer = malloc(framebuffer_size);
+    framebuffer = safe_malloc(framebuffer_size);
     if (framebuffer == NULL) {
         printf("Failed to allocate framebuffer!\n");
         while (1) tight_loop_contents();
     }
     
     // Allocate sprite data memory
-    sprite_data = malloc(sprite_data_size);
+    //sprite_data = malloc(sprite_data_size);
+    sprite_data = safe_malloc(sprite_data_size);
     if (sprite_data == NULL) {
         printf("Failed to allocate sprite data memory!\n");
         while (1) tight_loop_contents();
@@ -2060,7 +2088,8 @@ void initialize_double_buffering() {
     uint32_t single_buffer_size = display_width * display_height * (display_bpp / 8);
     
     front_buffer = framebuffer; // Use already allocated buffer
-    back_buffer = malloc(single_buffer_size);
+    // back_buffer = malloc(single_buffer_size);
+    back_buffer = safe_malloc(single_buffer_size);
     
     if (back_buffer != NULL) {
         // Clear both buffers
@@ -2420,7 +2449,8 @@ void set_hscroll_mode(uint8_t mode) {
     if (mode == 2) { // Line scroll mode
         for (int i = 0; i < MAX_LAYERS; i++) {
             if (layers[i].h_scroll_table == NULL) {
-                layers[i].h_scroll_table = malloc(display_height * sizeof(uint16_t));
+                // layers[i].h_scroll_table = malloc(display_height * sizeof(uint16_t));
+                layers[i].h_scroll_table = safe_malloc(display_height * sizeof(uint16_t));
                 if (layers[i].h_scroll_table != NULL) {
                     memset(layers[i].h_scroll_table, 0, display_height * sizeof(uint16_t));
                 }
@@ -2466,7 +2496,8 @@ void set_sprite_collision_detection(uint8_t mode) {
         // For sprite-sprite collision (mode 1 or 3)
         if (mode == 1 || mode == 3) {
             if (sprite_collision_buffer == NULL) {
-                sprite_collision_buffer = malloc(display_width * display_height / 8);
+                // sprite_collision_buffer = malloc(display_width * display_height / 8);
+                sprite_collision_buffer = safe_malloc(display_width * display_height / 8);
             }
             memset(sprite_collision_buffer, 0, display_width * display_height / 8);
         }
@@ -2474,7 +2505,8 @@ void set_sprite_collision_detection(uint8_t mode) {
         // For sprite-BG collision (mode 2 or 3)
         if (mode == 2 || mode == 3) {
             if (bg_collision_buffer == NULL) {
-                bg_collision_buffer = malloc(display_width * display_height / 8);
+                // bg_collision_buffer = malloc(display_width * display_height / 8);
+                bg_collision_buffer = safe_malloc(display_width * display_height / 8);
             }
             
             // Fill background collision buffer based on non-zero pixels in layers
