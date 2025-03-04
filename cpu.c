@@ -36,6 +36,141 @@ Architecture:
   - Game loop synchronized with GPU via VSYNC
 */
 
+// Required headers
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <math.h>
+#include "pico/stdlib.h"
+#include "pico/multicore.h"
+#include "hardware/spi.h"
+#include "hardware/gpio.h"
+#include "hardware/timer.h"
+#include "hardware/watchdog.h"
+#include "hardware/rtc.h"
+#include "hardware/flash.h"
+#include "pico/mutex.h"
+#include "ff.h" // FatFS library
+
+// Define constants
+#define MAX_SPRITES 64
+#define MAX_PATTERNS 128
+#define MAX_CACHED_TILES 256
+#define MAX_LAYERS 4
+#define MAX_DIRTY_REGIONS 16
+#define MAX_ASSETS 256
+#define MAX_CACHED_ASSETS 32
+#define MAX_RECOVERY_ATTEMPTS 3
+#define SYNC_INTERVAL_MS 1000
+
+// Event types
+enum {
+    EVENT_VSYNC = 0x01,
+    EVENT_ASSET_LOADED = 0x02,
+    EVENT_GAME_OVER = 0x03,
+    EVENT_LEVEL_COMPLETE = 0x04
+};
+
+// Error codes
+typedef enum {
+    ERR_NONE = 0,
+    ERR_TIMEOUT = 1,
+    ERR_INVALID_COMMAND = 2,
+    ERR_MEMORY_FULL = 3,
+    ERR_INVALID_PARAMETER = 4,
+    ERR_OUT_OF_MEMORY = 5,
+    ERR_INVALID_DATA = 6,
+    ERR_COMMUNICATION_FAILURE = 7,
+    ERR_SYNC_LOST = 8,
+    ERR_UNKNOWN_COMMAND = 9,
+    ERR_INVALID_PATTERN = 10,
+    ERR_GPU_FAILURE = 11,
+    ERR_APU_FAILURE = 12,
+    ERR_QUEUE_FULL = 13
+} ErrorCode;
+
+// Global state variables
+FATFS fatfs;
+bool in_system_recovery = false;
+ErrorCode system_error = ERR_NONE;
+uint8_t gpu_recovery_attempts = 0;
+uint8_t apu_recovery_attempts = 0;
+bool debug_enabled = false;
+uint32_t gpu_data_ready_pin = 22;
+uint32_t apu_data_ready_pin = 23;
+uint8_t gpu_reset_pin = 24;
+uint8_t apu_reset_pin = 25;
+
+// FatFS type definitions
+typedef struct {
+    // FatFS internal structure
+    // This is a simplified version for this example
+    void* fs;                // Filesystem object
+    uint32_t fptr;           // File read/write pointer
+    uint32_t fsize;          // File size
+    uint16_t flag;           // File status flags
+    uint8_t err;             // Abort flag (error code)
+    void* buf;               // File data transfer buffer
+    uint32_t buf_size;       // Size of file buffer
+} FIL;
+
+// Game header structure
+typedef struct {
+    char magic[4];           // "TBOY"
+    uint32_t game_id;
+    char title[32];
+    uint32_t code_size;
+    char asset_registry[32];
+    char asset_file[32];
+    // Additional fields for GPU and APU assets
+    struct {
+        uint32_t count;
+        uint32_t offset;
+    } gpu_assets;
+    struct {
+        uint32_t count;
+        uint32_t offset;
+    } apu_assets;
+} GameHeader;
+
+// Game info for selection menu
+typedef struct {
+    char title[32];
+    char filename[32];
+    uint32_t game_id;
+    uint8_t icon_id;
+} GameInfo;
+
+// Function prototypes
+bool check_if_rp2350();
+void hardware_timer_init(uint8_t timer_id, uint32_t interval_ms, void (*callback)());
+void parse_config_line(const char* line);
+void create_default_config();
+void send_gpu_reset_command();
+void send_apu_reset_command();
+void display_error(const char* message);
+void display_system_error();
+void load_boot_assets();
+void display_boot_screen();
+void load_system_config();
+void initialize_gpu();
+void initialize_apu();
+void initialize_game_menu();
+GameInfo run_game_selector();
+void handle_game_event(uint32_t event_id, uint32_t param, void* data);
+void open_qspi_game_file(const char* filename);
+void read_game_header(FILE* file, GameHeader* header);
+void* allocate_game_memory(uint32_t size);
+void load_game_code(FILE* file, void* memory, uint32_t size);
+void load_gpu_assets_qspi(FILE* file, struct gpu_assets* assets);
+void load_apu_assets_qspi(FILE* file, struct apu_assets* assets);
+void close_file(FILE* file);
+void process_enhanced_queue(CommandQueue* queue);
+void prepare_rendering();
+void prepare_audio();
+void process_input();
+void update_game_state();
+
 // Hardware Initialization and System Setup
 // Pin definitions
 #define GPU_SPI_PORT spi0
@@ -1423,7 +1558,7 @@ bool load_game(const char* filename) {
     // Load game code
     if (header.code_size > 0) {
         // Placeholder for loading executable code
-        // In a real implementation, this would load actual executable code
+        // Need to load actual executable code
         printf("Loading game code: %lu bytes\n", header.code_size);
     }
     
@@ -2013,7 +2148,7 @@ int main() {
     run_game_loop();
     
     // If we exit the game loop, return to the game selection menu
-    // In a real implementation, this would show a game over screen
+    // Need to show a game over screen
     // and then return to the menu
     
     return 0;
@@ -2136,8 +2271,7 @@ void draw_rect(int16_t x, int16_t y, uint16_t width, uint16_t height, uint8_t co
 // RP2350-Specific Enhancements
 // Check if running on RP2350
 bool check_if_rp2350() {
-    // This is implementation-specific and would depend on
-    // how to detect the chip type
+    // This is implementation-specific and would depend on how to detect the chip type
     
     // A simple approach might be to check available RAM
     uint32_t* ram_test = malloc(400 * 1024); // Try to allocate 400KB
@@ -2340,3 +2474,726 @@ This comprehensive CPU implementation provides all the key functionality for the
    - Display of boot screen
    - Game selection menu
 */
+
+
+// Implementation of missing functions
+bool check_if_rp2350() {
+    // Simple approximation - Need to check hardware registers
+    uint32_t* ram_test = malloc(400 * 1024); // Try to allocate 400KB
+    bool is_rp2350 = (ram_test != NULL);
+
+    if (ram_test != NULL) {
+        free(ram_test);
+    }
+
+    return is_rp2350;
+}
+
+void hardware_timer_init(uint8_t timer_id, uint32_t interval_ms, void (*callback)()) {
+    // Configure a hardware timer with the given interval and callback
+
+    // Simple placeholder implementation
+    // 1. Configure the hardware timer with the specified interval
+    // 2. Set up the interrupt handler to call the callback
+    // 3. Enable the timer interrupt
+
+    // Since RP2040 doesn't have named timers, timer_id is used to select
+    // which of the available hardware timers to use
+
+    // This example uses alarm 0 for timer_id 0
+    if (timer_id == TIMER_SYNC) {
+        // Assuming TIMER_SYNC is defined as 0
+        hardware_alarm_set_callback(0, (hardware_alarm_callback_t)callback);
+        hardware_alarm_set_target(0, make_timeout_time_ms(interval_ms));
+    }
+}
+
+void parse_config_line(const char* line) {
+    // Parse a line from the configuration file
+    // Example line: "debug_mode=true"
+
+    // Skip blank lines and comments
+    if (line[0] == 0 || line[0] == '#' || line[0] == ';') {
+        return;
+    }
+
+    // Find the equals sign
+    const char* equals = strchr(line, '=');
+    if (equals == NULL) {
+        return; // Invalid line, no equals sign
+    }
+
+    // Extract the key
+    char key[32];
+    size_t key_len = equals - line;
+    if (key_len >= sizeof(key)) {
+        key_len = sizeof(key) - 1;
+    }
+    memcpy(key, line, key_len);
+    key[key_len] = 0;
+
+    // Extract the value
+    const char* value = equals + 1;
+
+    // Process specific configuration options
+    if (strcmp(key, "debug_mode") == 0) {
+        debug_enabled = (strcmp(value, "true") == 0 || strcmp(value, "1") == 0);
+    } else if (strcmp(key, "master_volume") == 0) {
+        int volume = atoi(value);
+        if (volume >= 0 && volume <= 255) {
+            // Would set master volume
+        }
+    }
+    // Add more configuration options as needed
+}
+
+void create_default_config() {
+    // Create a default configuration file
+    FIL f;
+    FRESULT fr;
+
+    fr = f_open(&f, "config.ini", FA_WRITE | FA_CREATE_ALWAYS);
+    if (fr == FR_OK) {
+        // Write default configuration
+        f_printf(&f, "# TriBoy Configuration\n");
+        f_printf(&f, "debug_mode=false\n");
+        f_printf(&f, "master_volume=200\n");
+        f_printf(&f, "screen_brightness=180\n");
+        f_printf(&f, "power_save=true\n");
+
+        f_close(&f);
+
+        // Use default values for now
+        debug_enabled = false;
+    }
+}
+
+void send_gpu_reset_command() {
+    // Reset the GPU by sending the reset command
+    uint8_t cmd_data[2] = {CMD_RESET_GPU, 2}; // Command ID and length
+
+    // Send command directly to GPU
+    gpio_put(GPU_CS_PIN, 0);
+    spi_write_blocking(GPU_SPI_PORT, cmd_data, 2);
+    gpio_put(GPU_CS_PIN, 1);
+
+    // Wait for GPU to reset (give it some time)
+    sleep_ms(50);
+
+    // Re-initialize GPU
+    initialize_gpu();
+}
+
+void send_apu_reset_command() {
+    // Reset the APU by sending the reset command
+    uint8_t cmd_data[2] = {CMD_RESET_AUDIO, 2}; // Command ID and length
+
+    // Send command directly to APU
+    gpio_put(APU_CS_PIN, 0);
+    spi_write_blocking(APU_SPI_PORT, cmd_data, 2);
+    gpio_put(APU_CS_PIN, 1);
+
+    // Wait for APU to reset (give it some time)
+    sleep_ms(50);
+
+    // Re-initialize APU
+    initialize_apu();
+}
+
+void display_error(const char* message) {
+    // Display an error message on screen
+    // Need to render text to the framebuffer and update the display
+
+    // For this example, we'll just print to serial console
+    printf("ERROR: %s\n", message);
+
+    // Simple placeholder implementation
+    // 1. Send commands to GPU to clear the screen
+    // 2. Draw error message text
+    // 3. Display a warning icon
+
+    // Example GPU commands for a real implementation:
+    uint8_t clear_cmd[3] = {0x82, 11, 0, 0, 0, 0, (display_width >> 8) & 0xFF, display_width & 0xFF,
+                           (display_height >> 8) & 0xFF, display_height & 0xFF, 0, 1};
+    queue_gpu_command(0x82, 11, clear_cmd);
+
+    // Draw error text would follow...
+}
+
+void display_system_error() {
+    // Display a system error screen
+    const char* error_text;
+
+    switch (system_error) {
+        case ERR_GPU_FAILURE:
+            error_text = "GPU FAILURE";
+            break;
+        case ERR_APU_FAILURE:
+            error_text = "APU FAILURE";
+            break;
+        case ERR_MEMORY_FULL:
+            error_text = "OUT OF MEMORY";
+            break;
+        case ERR_COMMUNICATION_FAILURE:
+            error_text = "COMM FAILURE";
+            break;
+        default:
+            error_text = "SYSTEM ERROR";
+            break;
+    }
+
+    display_error(error_text);
+}
+
+void load_boot_assets() {
+    // Load boot logo, splash screen, and UI elements
+    FIL f;
+    FRESULT fr;
+
+    // Load boot logo
+    fr = f_open(&f, "boot/logo.bin", FA_READ);
+    if (fr == FR_OK) {
+        // Read logo data
+        uint32_t size = f_size(&f);
+        uint8_t* logo_data = malloc(size);
+
+        UINT br;
+        fr = f_read(&f, logo_data, size, &br);
+
+        if (fr == FR_OK && br == size) {
+            // Send logo to GPU as a sprite
+            uint8_t header[5] = {
+                0,    // Pattern ID
+                10,   // Width in 8-pixel units
+                5,    // Height in 8-pixel units
+                8,    // 8bpp
+                0     // No compression
+            };
+
+            uint8_t* cmd_data = malloc(size + 5);
+            memcpy(cmd_data, header, 5);
+            memcpy(cmd_data + 5, logo_data, size);
+
+            queue_gpu_command(0x40, 5 + 2, cmd_data); // LOAD_SPRITE_PATTERN
+
+            free(cmd_data);
+        }
+
+        free(logo_data);
+        f_close(&f);
+    }
+}
+
+void display_boot_screen() {
+    // Display the boot logo and animation
+
+    // Place the logo sprite in the center of the screen
+    uint8_t sprite_cmd[9] = {
+        0,    // Sprite ID
+        0,    // Pattern ID
+        (160 >> 8) & 0xFF, 160 & 0xFF,  // X position (center)
+        (100 >> 8) & 0xFF, 100 & 0xFF,  // Y position
+        0,    // Attributes
+        0,    // Palette offset
+        128   // Scale (1.0)
+    };
+
+    queue_gpu_command(0x41, 10, sprite_cmd); // DEFINE_SPRITE
+
+    // Process GPU commands
+    process_gpu_queue();
+
+    // Wait for a moment to display logo
+    sleep_ms(1000);
+}
+
+void load_system_config() {
+    FIL f;
+    FRESULT fr;
+
+    // Try to open config file
+    fr = f_open(&f, "config.ini", FA_READ);
+    if (fr == FR_OK) {
+        // Read configuration (simplified)
+        char line[64];
+        TCHAR* result;
+
+        while (1) {
+            // Read a line
+            result = f_gets(line, sizeof(line), &f);
+            if (result == NULL) break;
+
+            // Parse the line
+            parse_config_line(line);
+        }
+
+        f_close(&f);
+    } else {
+        // Create default configuration
+        create_default_config();
+    }
+}
+
+void initialize_gpu() {
+    // Reset GPU
+    uint8_t reset_cmd[1] = {0};
+    queue_gpu_command(0x01, 2, reset_cmd); // RESET_GPU
+
+    // Set display mode (320x240x8bpp)
+    uint8_t display_cmd[5] = {
+        (320 >> 8) & 0xFF, 320 & 0xFF,  // Width
+        (240 >> 8) & 0xFF, 240 & 0xFF,  // Height
+        8                               // BPP
+    };
+    queue_gpu_command(0x02, 7, display_cmd); // SET_DISPLAY_MODE
+
+    // Enable VSYNC notification
+    uint8_t vsync_cmd[1] = {1};
+    queue_gpu_command(0x03, 3, vsync_cmd); // SET_VBLANK_CALLBACK
+
+    // Process commands
+    process_gpu_queue();
+}
+
+void initialize_apu() {
+    // Reset APU
+    uint8_t reset_cmd[1] = {0};
+    queue_apu_command(0x01, 2, reset_cmd); // RESET_AUDIO
+
+    // Set master volume
+    uint8_t volume_cmd[1] = {200}; // 0-255
+    queue_apu_command(0x02, 3, volume_cmd); // SET_MASTER_VOLUME
+
+    // Process commands
+    process_apu_queue();
+}
+
+void initialize_game_menu() {
+    // Set up the game selection menu UI
+
+    // Simple placeholder implementation
+    // 1. Scan SD card for available games
+    // 2. Load menu graphics and UI
+    // 3. Prepare game selection interface
+
+    // Simple implementation
+
+    // Scan for game files
+    DIR dir;
+    FILINFO fno;
+    FRESULT fr;
+
+    fr = f_opendir(&dir, "/games");
+    if (fr == FR_OK) {
+        // Count available games
+        int game_count = 0;
+
+        for (;;) {
+            fr = f_readdir(&dir, &fno);
+            if (fr != FR_OK || fno.fname[0] == 0) break;
+
+            // Check if it's a .tboy file
+            if (strstr(fno.fname, ".tboy") != NULL) {
+                game_count++;
+            }
+        }
+
+        f_closedir(&dir);
+
+        // If games were found, set up menu UI
+        if (game_count > 0) {
+            // Need to load menu assets and UI
+            // For this example, we'll just print to console
+            printf("Found %d games on SD card\n", game_count);
+        } else {
+            display_error("No games found");
+        }
+    } else {
+        display_error("Failed to open games directory");
+    }
+}
+
+GameInfo run_game_selector() {
+    // Run the game selection menu and return the selected game
+    GameInfo selected_game;
+    DIR dir;
+    FILINFO fno;
+    FRESULT fr;
+    int selection = 0;
+    int game_count = 0;
+    GameInfo games[32]; // Up to 32 games
+
+    // Scan for game files
+    fr = f_opendir(&dir, "/games");
+    if (fr == FR_OK) {
+        // Enumerate games
+        for (;;) {
+            fr = f_readdir(&dir, &fno);
+            if (fr != FR_OK || fno.fname[0] == 0) break;
+
+            // Check if it's a .tboy file
+            if (strstr(fno.fname, ".tboy") != NULL && game_count < 32) {
+                // Add to list
+                strncpy(games[game_count].filename, fno.fname, sizeof(games[game_count].filename) - 1);
+                games[game_count].filename[sizeof(games[game_count].filename) - 1] = 0;
+
+                // Extract title (would normally read from file header)
+                strncpy(games[game_count].title, fno.fname, sizeof(games[game_count].title) - 1);
+                games[game_count].title[sizeof(games[game_count].title) - 1] = 0;
+
+                // Remove .tboy extension from title
+                char* ext = strstr(games[game_count].title, ".tboy");
+                if (ext != NULL) {
+                    *ext = 0;
+                }
+
+                game_count++;
+            }
+        }
+
+        f_closedir(&dir);
+    }
+
+    // If no games found, return empty result
+    if (game_count == 0) {
+        memset(&selected_game, 0, sizeof(selected_game));
+        return selected_game;
+    }
+
+    // Run menu loop
+    bool selection_made = false;
+
+    while (!selection_made) {
+        // Display current selection
+        // Need to render the menu UI
+
+        // Process input
+        update_buttons();
+
+        if (button_pressed(current_buttons.up, previous_buttons.up)) {
+            selection = (selection > 0) ? selection - 1 : game_count - 1;
+        } else if (button_pressed(current_buttons.down, previous_buttons.down)) {
+            selection = (selection < game_count - 1) ? selection + 1 : 0;
+        } else if (button_pressed(current_buttons.a, previous_buttons.a) ||
+                   button_pressed(current_buttons.start, previous_buttons.start)) {
+            selection_made = true;
+        }
+
+        sleep_ms(50); // Prevent tight loop
+    }
+
+    // Return selected game
+    return games[selection];
+}
+
+void handle_game_event(uint32_t event_id, uint32_t param, void* data) {
+    // Handle game-specific events
+    switch (event_id) {
+        case EVENT_VSYNC:
+            // VSYNC occurred, update frame timing
+            update_frame_timing();
+            break;
+
+        case EVENT_ASSET_LOADED:
+            // Asset loaded notification
+            if (debug_enabled) {
+                printf("Asset loaded: %lu\n", param);
+            }
+            break;
+
+        case EVENT_GAME_OVER:
+            // Game over event - would handle game over sequence
+            break;
+
+        case EVENT_LEVEL_COMPLETE:
+            // Level complete event - would handle level transition
+            break;
+
+        default:
+            // Unknown event
+            break;
+    }
+}
+
+void open_qspi_game_file(const char* filename) {
+    // Need to access a file from QSPI flash
+    // For this simplified example, we just open from the filesystem
+    return fopen(filename, "rb");
+}
+
+void read_game_header(FILE* file, GameHeader* header) {
+    // Read the game header from the file
+    if (file == NULL || header == NULL) return;
+
+    fread(header, sizeof(GameHeader), 1, file);
+
+    // Verify magic value
+    if (memcmp(header->magic, "TBOY", 4) != 0) {
+        // Invalid header
+        memset(header, 0, sizeof(GameHeader));
+    }
+}
+
+void* allocate_game_memory(uint32_t size) {
+    // Allocate memory for game code/data
+    return malloc(size);
+}
+
+void load_game_code(FILE* file, void* memory, uint32_t size) {
+    // Load game code from file into memory
+    if (file == NULL || memory == NULL) return;
+
+    fread(memory, 1, size, file);
+}
+
+void load_gpu_assets_qspi(FILE* file, struct gpu_assets* assets) {
+    // Load GPU assets from file
+    if (file == NULL || assets == NULL) return;
+
+    // Seek to GPU assets section
+    fseek(file, assets->offset, SEEK_SET);
+
+    // Read and load each asset
+    for (uint32_t i = 0; i < assets->count; i++) {
+        // Read asset header (type, size, etc.)
+        uint8_t type;
+        uint32_t size;
+
+        fread(&type, 1, 1, file);
+        fread(&size, 4, 1, file);
+
+        // Allocate memory for asset data
+        uint8_t* asset_data = malloc(size);
+        if (asset_data == NULL) continue;
+
+        // Read asset data
+        fread(asset_data, 1, size, file);
+
+        // Process based on asset type
+        switch (type) {
+            case 0: // Tileset
+                // Send to GPU
+                // Implementation would depend on the specific format
+                break;
+
+            case 1: // Sprite
+                // Send to GPU
+                break;
+
+            case 2: // Palette
+                // Send to GPU
+                break;
+
+            default:
+                // Unknown asset type
+                break;
+        }
+
+        // Free asset data
+        free(asset_data);
+    }
+}
+
+void load_apu_assets_qspi(FILE* file, struct apu_assets* assets) {
+    // Load APU assets from file
+    if (file == NULL || assets == NULL) return;
+
+    // Seek to APU assets section
+    fseek(file, assets->offset, SEEK_SET);
+
+    // Read and load each asset
+    for (uint32_t i = 0; i < assets->count; i++) {
+        // Read asset header (type, size, etc.)
+        uint8_t type;
+        uint32_t size;
+
+        fread(&type, 1, 1, file);
+        fread(&size, 4, 1, file);
+
+        // Allocate memory for asset data
+        uint8_t* asset_data = malloc(size);
+        if (asset_data == NULL) continue;
+
+        // Read asset data
+        fread(asset_data, 1, size, file);
+
+        // Process based on asset type
+        switch (type) {
+            case 0: // Sample
+                // Send to APU
+                break;
+
+            case 1: // Music track
+                // Send to APU
+                break;
+
+            default:
+                // Unknown asset type
+                break;
+        }
+
+        // Free asset data
+        free(asset_data);
+    }
+}
+
+void close_file(FILE* file) {
+    // Close file handle
+    if (file != NULL) {
+        fclose(file);
+    }
+}
+
+void process_enhanced_queue(CommandQueue* queue) {
+    // Process commands from queue with enhanced error handling
+    const int MAX_BATCH = 10; // Process up to 10 commands at once
+    int processed = 0;
+
+    while (processed < MAX_BATCH) {
+        mutex_enter_blocking(&queue->lock);
+
+        // Check if queue is empty
+        if (queue->count == 0) {
+            mutex_exit(&queue->lock);
+            break;
+        }
+
+        // Get command from queue
+        Command* cmd = &queue->commands[queue->head];
+
+        // Prepare buffer for SPI transfer
+        uint8_t buffer[258]; // Maximum command size
+        buffer[0] = cmd->command_id;
+        buffer[1] = cmd->length;
+
+        if (cmd->length > 2) {
+            memcpy(&buffer[2], cmd->data, cmd->length - 2);
+        }
+
+        // Update queue pointers
+        queue->head = (queue->head + 1) % queue->capacity;
+        queue->count--;
+
+        // Release lock before SPI communication
+        mutex_exit(&queue->lock);
+
+        // Determine target device
+        if (queue == &gpu_queue) {
+            // Send command to GPU
+            gpio_put(GPU_CS_PIN, 0); // Select GPU
+            spi_write_blocking(GPU_SPI_PORT, buffer, cmd->length);
+            gpio_put(GPU_CS_PIN, 1); // Deselect GPU
+        } else {
+            // Send command to APU
+            gpio_put(APU_CS_PIN, 0); // Select APU
+            spi_write_blocking(APU_SPI_PORT, buffer, cmd->length);
+            gpio_put(APU_CS_PIN, 1); // Deselect APU
+        }
+
+        processed++;
+
+        // Brief delay between commands
+        sleep_us(10);
+    }
+}
+
+
+void prepare_rendering() {
+    // Prepare rendering commands for GPU
+    // This would typically generate all the GPU commands needed for the frame
+    // For demonstration, we'll implement a simple example
+
+    // Example: Scroll background layers
+    static uint16_t scroll_x = 0;
+
+    // Scroll the background layer
+    uint8_t scroll_cmd[5] = {
+        0,                        // Layer ID
+        (scroll_x >> 8) & 0xFF, scroll_x & 0xFF,  // X scroll
+        0, 0                      // Y scroll
+    };
+    queue_gpu_command(0x23, 6, scroll_cmd); // SCROLL_LAYER
+
+    // Update scroll position for next frame
+    scroll_x = (scroll_x + 1) % 1024;
+}
+
+void prepare_audio() {
+    // Prepare audio commands for APU
+    // This would typically generate all the APU commands needed for the frame
+    // For demonstration, we'll keep it simple
+
+    // Example: Update a channel volume based on distance
+    static uint8_t volume = 128;
+    static int8_t vol_dir = 1;
+
+    // Slowly oscillate volume
+    volume += vol_dir;
+    if (volume >= 240 || volume <= 128) {
+        vol_dir = -vol_dir;
+    }
+
+    // Set channel volume
+    uint8_t vol_cmd[2] = {
+        0,      // Channel ID
+        volume  // Volume
+    };
+    queue_apu_command(0x30, 3, vol_cmd); // CHANNEL_SET_VOLUME
+}
+
+void process_input() {
+    // Read and process input from buttons/D-pad
+    update_buttons();
+
+    // Button state has now been updated in current_buttons
+    // Game-specific input handling would be implemented here
+}
+
+void update_game_state() {
+    // Update game state based on input and game logic
+    // This is where the main game loop would update:
+    // - Player movement and physics
+    // - Enemy behavior
+    // - Collision detection
+    // - Score and game progression
+    // - Other game-specific logic
+
+    // For a simple example:
+
+    // Get player movement from input
+    int dx = 0, dy = 0;
+    get_direction(&dx, &dy);
+
+    // Update player position
+    static int16_t player_x = 160;
+    static int16_t player_y = 120;
+
+    player_x += dx * 2;
+    player_y += dy * 2;
+
+    // Keep player on screen
+    if (player_x < 8) player_x = 8;
+    if (player_x > 312) player_x = 312;
+    if (player_y < 8) player_y = 8;
+    if (player_y > 232) player_y = 232;
+
+    // Update sprite position
+    uint8_t move_cmd[5] = {
+        0,                           // Sprite ID
+        (player_x >> 8) & 0xFF, player_x & 0xFF,  // X position
+        (player_y >> 8) & 0xFF, player_y & 0xFF   // Y position
+    };
+    queue_gpu_command(0x42, 6, move_cmd); // MOVE_SPRITE
+
+    // Check for A button press
+    if (button_pressed(current_buttons.a, previous_buttons.a)) {
+        // Play sound effect
+        uint8_t sound_cmd[4] = {
+            0,    // Channel
+            1,    // Sample ID
+            128,  // Pitch (normal)
+            200   // Volume
+        };
+        queue_apu_command(0x71, 5, sound_cmd); // SAMPLE_PLAY
+    }
+}

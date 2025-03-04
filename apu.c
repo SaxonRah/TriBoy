@@ -43,6 +43,197 @@ Audio pipeline:
   6. Output via PWM or I2S
 */
 
+// Required headers
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <math.h>
+#include "pico/stdlib.h"
+#include "pico/multicore.h"
+#include "hardware/spi.h"
+#include "hardware/gpio.h"
+#include "hardware/pwm.h"
+#include "hardware/dma.h"
+#include "hardware/irq.h"
+#include "hardware/sync.h"
+#include "pico/mutex.h"
+
+// Define constants
+#define MAX_CHANNELS 16
+#define MAX_SAMPLES 64
+#define MAX_TRACKERS 8
+#define MAX_WAVETABLES 32
+#define MAX_PATTERNS 64
+#define MAX_SPRITES 64
+#define MAX_CACHED_TILES 256
+#define MAX_LAYERS 4
+#define MAX_DIRTY_REGIONS 16
+#define MAX_ROWS_PER_PATTERN 256
+#define MAX_TRACKER_CHANNELS 16
+#define SAMPLE_RATE 44100
+#define AUDIO_BUFFER_SIZE 256
+#define SINE_WAVE_SIZE 256
+#define MAX_OPERATORS_PER_FM_CHANNEL 4
+#define REVERB_COMB1_LENGTH 1557
+#define REVERB_COMB2_LENGTH 1617
+#define REVERB_COMB3_LENGTH 1491
+#define REVERB_COMB4_LENGTH 1422
+#define REVERB_AP1_LENGTH 225
+#define REVERB_AP2_LENGTH 341
+#define REVERB_BUFFER_SIZE 4096
+
+// SPI configuration
+#define SPI_PORT spi0
+#define SPI_FREQUENCY 8000000
+#define SPI_SCK_PIN 18
+#define SPI_MOSI_PIN 19
+#define SPI_MISO_PIN 16
+#define CPU_CS_PIN 17
+#define DATA_READY_PIN 20
+
+// Audio pin configuration
+#define AUDIO_PIN_LEFT 0
+#define AUDIO_PIN_RIGHT 1
+#define AUDIO_I2S_BCLK 2
+#define AUDIO_I2S_DATA 3
+#define AUDIO_I2S_LRCLK 4
+
+// Channel types
+#define CHANNEL_TYPE_FM 0
+#define CHANNEL_TYPE_SAMPLE 1
+#define CHANNEL_TYPE_WAVETABLE 2
+
+// Error codes
+typedef enum {
+    ERR_NONE = 0,
+    ERR_TIMEOUT = 1,
+    ERR_INVALID_COMMAND = 2,
+    ERR_MEMORY_FULL = 3,
+    ERR_INVALID_PARAMETER = 4,
+    ERR_OUT_OF_MEMORY = 5,
+    ERR_INVALID_DATA = 6,
+    ERR_COMMUNICATION_FAILURE = 7,
+    ERR_SYNC_LOST = 8,
+    ERR_UNKNOWN_COMMAND = 9,
+    ERR_INVALID_PATTERN = 10
+} ErrorCode;
+
+// Command IDs
+enum {
+    CMD_NOP = 0x00,
+    CMD_RESET_AUDIO = 0x01,
+    CMD_SET_MASTER_VOLUME = 0x02,
+    CMD_SET_VBLANK_CALLBACK = 0x03,
+    CMD_VSYNC_WAIT = 0x04,
+    CMD_TRACKER_LOAD = 0x10,
+    CMD_TRACKER_PLAY = 0x11,
+    CMD_TRACKER_STOP = 0x12,
+    CMD_CHANNEL_NOTE_ON = 0x33,
+    CMD_CHANNEL_SET_VOLUME = 0x30,
+    CMD_FM_INIT_CHANNEL = 0x50,
+    CMD_SAMPLE_LOAD = 0x70,
+    CMD_SAMPLE_PLAY = 0x71,
+    CMD_WAVE_DEFINE_TABLE = 0x90,
+    CMD_WAVE_SET_SWEEP = 0x94,
+    CMD_EFFECT_SET_REVERB = 0xB0,
+    CMD_EFFECT_SET_DELAY = 0xB1,
+    CMD_EFFECT_SET_FILTER = 0xB2,
+    CMD_MEM_STATUS = 0xD3,
+    CMD_MEM_CLEAR_SAMPLES = 0xD0,
+    CMD_MEM_OPTIMIZE = 0xD4,
+    STATUS_MEMORY = 0xE0
+};
+
+// RGB color structure
+typedef struct {
+    uint8_t r;
+    uint8_t g;
+    uint8_t b;
+} RGB;
+
+// Channel structure
+typedef struct {
+    bool active;
+    uint8_t type;
+    uint8_t volume;
+    uint8_t pan;
+    float frequency;
+    float base_frequency;
+
+    // Effects
+    bool arpeggio_enabled;
+    uint8_t arpeggio_note1;
+    uint8_t arpeggio_note2;
+    uint8_t arpeggio_counter;
+
+    bool portamento_active;
+    uint8_t portamento_up;
+    uint8_t portamento_down;
+
+    bool vibrato_active;
+    uint8_t vibrato_speed;
+    uint8_t vibrato_depth;
+    float vibrato_phase;
+
+    bool tremolo_active;
+    uint8_t tremolo_speed;
+    uint8_t tremolo_depth;
+    float tremolo_phase;
+    uint8_t base_volume;
+
+    bool volume_slide_active;
+    uint8_t volume_slide;
+    int8_t volume_slide_direction;
+} Channel;
+
+// Global variables
+Channel channels[MAX_CHANNELS];
+uint8_t master_volume = 255;
+int16_t sine_table[SINE_WAVE_SIZE];
+uint8_t cmd_buffer[256];
+uint8_t output_buffer[AUDIO_BUFFER_SIZE * 2];
+bool debug_enabled = false;
+mutex_t spi_mutex;
+uint32_t audio_cpu_load = 0;
+uint32_t sample_memory_size = 0;
+uint32_t pattern_memory_size = 0;
+uint32_t instrument_memory_size = 0;
+uint32_t tile_cache_size = 0;
+bool use_24bit_processing = false;
+bool use_cubic_interpolation = false;
+bool enable_wavetable_fm = false;
+bool use_i2s_double_buffer = false;
+uint8_t dma_i2s_channel = 0;
+uint16_t* i2s_buffer = NULL;
+
+// Function prototypes
+void setup_spi_slave();
+void send_ack_to_cpu(uint8_t command_id);
+void send_error_to_cpu(uint8_t command_id, uint8_t error_code);
+void emergency_memory_cleanup();
+void reset_sync_state();
+void reset_spi_interface();
+uint32_t get_total_ram();
+uint32_t decompress_rle(const uint8_t* input, uint32_t input_size, uint8_t* output, uint32_t output_max);
+void update_channel_frequency(uint8_t channel_id);
+void reset_audio_system();
+void initialize_default_palette();
+void stop_all_sounds();
+void clear_unused_samples();
+void reset_effects();
+void trigger_fm_note(uint8_t channel_id, float freq);
+void trigger_sample_note(uint8_t channel_id, float freq);
+void trigger_wavetable_note(uint8_t channel_id, float freq);
+void update_envelope(FMOperator* op);
+void process_tracker_row(uint8_t tracker_id);
+void process_tracker_tick_effects(uint8_t tracker_id);
+void setup_i2s_output();
+void calculate_lowpass_coefficients(Filter* filter, float cutoff, float resonance);
+void calculate_highpass_coefficients(Filter* filter, float cutoff, float resonance);
+void calculate_bandpass_coefficients(Filter* filter, float cutoff, float resonance);
+uint8_t find_nearest_color(uint8_t r, uint8_t g, uint8_t b);
+
+
 // Clock Synchronization Implementation
 // Timing variables for clock synchronization
 volatile uint32_t synced_frame_counter = 0;
@@ -2373,3 +2564,269 @@ Features:
 5. Memory management and optimization
 6. RP2350-specific enhancements
 */
+
+
+// Implementation of missing functions
+void setup_spi_slave() {
+    // Initialize SPI in slave mode
+    spi_init(SPI_PORT, SPI_FREQUENCY);
+
+    // Configure SPI GPIOs
+    gpio_set_function(SPI_SCK_PIN, GPIO_FUNC_SPI);
+    gpio_set_function(SPI_MOSI_PIN, GPIO_FUNC_SPI);
+    gpio_set_function(SPI_MISO_PIN, GPIO_FUNC_SPI);
+
+    // Set up CS pin (active low)
+    gpio_init(CPU_CS_PIN);
+    gpio_set_dir(CPU_CS_PIN, GPIO_IN);
+    gpio_pull_up(CPU_CS_PIN);
+
+    // Data ready pin (to signal CPU we have data)
+    gpio_init(DATA_READY_PIN);
+    gpio_set_dir(DATA_READY_PIN, GPIO_OUT);
+    gpio_put(DATA_READY_PIN, 0);
+
+    // Initialize SPI mutex
+    mutex_init(&spi_mutex);
+}
+
+uint32_t get_total_ram() {
+    // This is a simple approximation. In a real implementation,
+    // you would check hardware-specific registers
+    return 264 * 1024; // Default to RP2040 RAM size
+}
+
+uint32_t decompress_rle(const uint8_t* input, uint32_t input_size, uint8_t* output, uint32_t output_max) {
+    uint32_t in_pos = 0;
+    uint32_t out_pos = 0;
+
+    while (in_pos < input_size && out_pos < output_max) {
+        uint8_t token = input[in_pos++];
+
+        if (token & 0x80) {
+            // Run of repeated values
+            uint8_t run_length = (token & 0x7F) + 1;
+            uint8_t value = input[in_pos++];
+
+            for (uint8_t i = 0; i < run_length && out_pos < output_max; i++) {
+                output[out_pos++] = value;
+            }
+        } else {
+            // Literal sequence
+            uint8_t literal_length = (token & 0x7F) + 1;
+
+            for (uint8_t i = 0; i < literal_length && in_pos < input_size && out_pos < output_max; i++) {
+                output[out_pos++] = input[in_pos++];
+            }
+        }
+    }
+
+    return out_pos;
+}
+
+void update_channel_frequency(uint8_t channel_id) {
+    if (channel_id >= MAX_CHANNELS) return;
+
+    Channel* ch = &channels[channel_id];
+
+    // Update frequency based on channel type
+    switch (ch->type) {
+        case CHANNEL_TYPE_FM:
+            // Calculate phase increment for FM operators
+            // Need to update FM operator frequencies
+            break;
+
+        case CHANNEL_TYPE_SAMPLE:
+            // Update sample playback rate
+            if (ch->active) {
+                float new_step = ch->frequency / 440.0f; // Base A4 = 440Hz
+                // Need to update sample step value
+            }
+            break;
+
+        case CHANNEL_TYPE_WAVETABLE:
+            // Update wavetable oscillator frequency
+            if (ch->active) {
+                // Need to update wavetable phase increment
+            }
+            break;
+    }
+}
+
+void reset_audio_system() {
+    // Reset all channels
+    for (int i = 0; i < MAX_CHANNELS; i++) {
+        channels[i].active = false;
+        channels[i].volume = 255;
+        channels[i].pan = 128;
+        channels[i].type = CHANNEL_TYPE_FM;
+        channels[i].frequency = 440.0f;
+        channels[i].base_frequency = 440.0f;
+
+        // Reset effects state
+        channels[i].arpeggio_enabled = false;
+        channels[i].portamento_active = false;
+        channels[i].vibrato_active = false;
+        channels[i].tremolo_active = false;
+        channels[i].volume_slide_active = false;
+    }
+
+    // Reset global state
+    master_volume = 200;
+
+    // Reset other subsystems
+    // Need to reset trackers, FM synthesis, etc.
+
+    // Clear all buffers
+    memset(output_buffer, 0, AUDIO_BUFFER_SIZE * 2);
+
+    // Send acknowledgment to CPU
+    send_ack_to_cpu(CMD_RESET_AUDIO);
+}
+
+void stop_all_sounds() {
+    // Stop all active channels
+    for (int i = 0; i < MAX_CHANNELS; i++) {
+        channels[i].active = false;
+    }
+
+    // Need to stop trackers and reset synthesis state
+}
+
+void clear_unused_samples() {
+    // Identify which samples are actually being used
+    bool sample_in_use[MAX_SAMPLES] = {false};
+
+    // Mark samples used by active channels
+    for (int i = 0; i < MAX_CHANNELS; i++) {
+        if (channels[i].active && channels[i].type == CHANNEL_TYPE_SAMPLE) {
+            // Mark this sample as in use
+            // Need to access the sample_id from the channel
+        }
+    }
+
+    // Free unused samples
+    // Need to iterate through sample list and free memory
+}
+
+void reset_effects() {
+    // Reset all effect processors to default state
+    // Need to reset reverb, delay, filters, etc.
+}
+
+void trigger_fm_note(uint8_t channel_id, float freq) {
+    if (channel_id >= MAX_CHANNELS) return;
+
+    Channel* ch = &channels[channel_id];
+    ch->active = true;
+    ch->frequency = freq;
+    ch->base_frequency = freq;
+
+    // Need to initialize FM synthesis for this note
+}
+
+void trigger_sample_note(uint8_t channel_id, float freq) {
+    if (channel_id >= MAX_CHANNELS) return;
+
+    Channel* ch = &channels[channel_id];
+    ch->active = true;
+    ch->frequency = freq;
+    ch->base_frequency = freq;
+
+    // Need to initialize sample playback
+}
+
+void trigger_wavetable_note(uint8_t channel_id, float freq) {
+    if (channel_id >= MAX_CHANNELS) return;
+
+    Channel* ch = &channels[channel_id];
+    ch->active = true;
+    ch->frequency = freq;
+    ch->base_frequency = freq;
+
+    // Need to initialize wavetable oscillator
+}
+
+uint8_t find_nearest_color(uint8_t r, uint8_t g, uint8_t b) {
+    // Simple implementation to find nearest color in palette
+    // Need to compute distance to each palette entry
+    return 1; // Return non-zero default color
+}
+
+void calculate_lowpass_coefficients(Filter* filter, float cutoff, float resonance) {
+    // Calculate biquad filter coefficients for lowpass filter
+    float omega = 2.0f * 3.14159f * cutoff;
+    float sn = sinf(omega);
+    float cs = cosf(omega);
+    float alpha = sn * resonance;
+
+    float a0 = 1.0f + alpha;
+    filter->a0 = (1.0f - cs) / (2.0f * a0);
+    filter->a1 = (1.0f - cs) / a0;
+    filter->a2 = (1.0f - cs) / (2.0f * a0);
+    filter->b1 = (-2.0f * cs) / a0;
+    filter->b2 = (1.0f - alpha) / a0;
+}
+
+void calculate_highpass_coefficients(Filter* filter, float cutoff, float resonance) {
+    // Calculate biquad filter coefficients for highpass filter
+    float omega = 2.0f * 3.14159f * cutoff;
+    float sn = sinf(omega);
+    float cs = cosf(omega);
+    float alpha = sn * resonance;
+
+    float a0 = 1.0f + alpha;
+    filter->a0 = (1.0f + cs) / (2.0f * a0);
+    filter->a1 = -(1.0f + cs) / a0;
+    filter->a2 = (1.0f + cs) / (2.0f * a0);
+    filter->b1 = (-2.0f * cs) / a0;
+    filter->b2 = (1.0f - alpha) / a0;
+}
+
+void calculate_bandpass_coefficients(Filter* filter, float cutoff, float resonance) {
+    // Calculate biquad filter coefficients for bandpass filter
+    float omega = 2.0f * 3.14159f * cutoff;
+    float sn = sinf(omega);
+    float cs = cosf(omega);
+    float alpha = sn * resonance;
+
+    float a0 = 1.0f + alpha;
+    filter->a0 = alpha / a0;
+    filter->a1 = 0.0f;
+    filter->a2 = -alpha / a0;
+    filter->b1 = (-2.0f * cs) / a0;
+    filter->b2 = (1.0f - alpha) / a0;
+}
+
+void update_envelope(FMOperator* op) {
+    // Update ADSR envelope state for FM operator
+    switch (op->envelope_state) {
+        case 1: // Attack
+            op->envelope_level += (1.0f - op->envelope_level) * (op->attack_rate / 31.0f);
+            if (op->envelope_level >= 0.99f) {
+                op->envelope_level = 1.0f;
+                op->envelope_state = 2; // Move to decay
+            }
+            break;
+
+        case 2: // Decay
+            op->envelope_level -= (op->envelope_level - op->sustain_level/31.0f) * (op->decay_rate / 31.0f);
+            if (op->envelope_level <= (op->sustain_level/31.0f) + 0.01f) {
+                op->envelope_level = op->sustain_level/31.0f;
+                op->envelope_state = 3; // Move to sustain
+            }
+            break;
+
+        case 3: // Sustain
+            // Maintain level
+            break;
+
+        case 4: // Release
+            op->envelope_level -= op->envelope_level * (op->release_rate / 31.0f);
+            if (op->envelope_level < 0.001f) {
+                op->envelope_level = 0.0f;
+                op->envelope_state = 0; // Note off
+            }
+            break;
+    }
+}

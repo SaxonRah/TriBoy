@@ -44,8 +44,166 @@ Graphics pipeline:
   6. Display output via SPI/parallel interface
 */
 
-// Clock Synchronization Implementation
+// Required headers
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <math.h>
+#include "pico/stdlib.h"
+#include "pico/multicore.h"
+#include "hardware/spi.h"
+#include "hardware/gpio.h"
+#include "hardware/pwm.h"
+#include "hardware/dma.h"
+#include "hardware/irq.h"
+#include "hardware/sync.h"
+#include "pico/mutex.h"
 
+// Define constants
+#define MAX_SPRITES 64
+#define MAX_PATTERNS 128
+#define MAX_CACHED_TILES 256
+#define MAX_LAYERS 4
+#define MAX_DIRTY_REGIONS 16
+#define SPI_FREQUENCY 8000000
+#define FRAME_INTERVAL_US 16667  // 60fps
+
+// SPI configuration
+#define SPI_PORT spi0
+#define CPU_SPI_PORT spi0
+#define SPI_SCK_PIN 18
+#define SPI_MOSI_PIN 19
+#define SPI_MISO_PIN 16
+#define CPU_CS_PIN 17
+#define DATA_READY_PIN 20
+#define VSYNC_PIN 21
+#define VBLANK_PIN 22
+
+// Display configuration
+#define DISPLAY_SPI_PORT spi1
+#define DISPLAY_SCK_PIN 10
+#define DISPLAY_MOSI_PIN 11
+#define DISPLAY_CS_PIN 12
+#define DISPLAY_DC_PIN 13  // Data/Command pin
+#define DISPLAY_RESET_PIN 14
+
+// Command IDs
+enum {
+    CMD_NOP = 0x00,
+    CMD_RESET_GPU = 0x01,
+    CMD_SET_DISPLAY_MODE = 0x02,
+    CMD_SET_VBLANK_CALLBACK = 0x03,
+    CMD_VSYNC_WAIT = 0x04,
+    CMD_SET_PALETTE_ENTRY = 0x10,
+    CMD_LOAD_PALETTE = 0x11,
+    CMD_CONFIGURE_LAYER = 0x20,
+    CMD_LOAD_TILESET = 0x21,
+    CMD_LOAD_TILEMAP = 0x22,
+    CMD_SCROLL_LAYER = 0x23,
+    CMD_SET_HSCROLL_TABLE = 0x24,
+    CMD_LOAD_SPRITE_PATTERN = 0x40,
+    CMD_DEFINE_SPRITE = 0x41,
+    CMD_MOVE_SPRITE = 0x42,
+    CMD_ANIMATE_SPRITE = 0x46,
+    CMD_SET_FADE = 0x60,
+    CMD_MOSAIC_EFFECT = 0x61,
+    CMD_ROTATION_ZOOM_BACKGROUND = 0x63,
+    CMD_SET_WINDOW = 0x64,
+    CMD_COLOR_MATH = 0x65,
+    CMD_DRAW_PIXEL = 0x80,
+    CMD_DRAW_LINE = 0x81,
+    CMD_DRAW_RECT = 0x82,
+    CMD_SET_CELL_BASED_SPRITES = 0xC0,
+    CMD_SET_HSCROLL_MODE = 0xC1,
+    CMD_SET_DUAL_PLAYFIELD = 0xC2,
+    CMD_SET_SPRITE_COLLISION_DETECTION = 0xC3
+};
+
+// Error codes
+typedef enum {
+    ERR_NONE = 0,
+    ERR_TIMEOUT = 1,
+    ERR_INVALID_COMMAND = 2,
+    ERR_MEMORY_FULL = 3,
+    ERR_INVALID_PARAMETER = 4,
+    ERR_OUT_OF_MEMORY = 5,
+    ERR_INVALID_DATA = 6,
+    ERR_COMMUNICATION_FAILURE = 7,
+    ERR_SYNC_LOST = 8,
+    ERR_UNKNOWN_COMMAND = 9,
+    ERR_INVALID_PATTERN = 10
+} ErrorCode;
+
+// Sprite order modes
+enum {
+    ORDER_BY_YPOS = 0,
+    ORDER_BY_PRIORITY = 1
+};
+
+// RGB color struct
+typedef struct {
+    uint8_t r;
+    uint8_t g;
+    uint8_t b;
+} RGB;
+
+// Palette entry
+RGB palette[256];
+
+// Global state variables
+uint8_t* framebuffer = NULL;
+uint8_t* front_buffer = NULL;
+uint8_t* back_buffer = NULL;
+uint8_t* current_draw_buffer = NULL;
+uint8_t cmd_buffer[256];
+uint16_t display_width = 320;
+uint16_t display_height = 240;
+uint8_t display_bpp = 8;
+uint32_t framebuffer_size = 0;
+uint32_t sprite_data_size = 0;
+uint32_t command_buffer_size = 0;
+uint8_t sprite_order_mode = ORDER_BY_YPOS;
+bool double_buffering_enabled = false;
+bool render_requested = false;
+bool rendering_in_progress = false;
+bool clear_screen_requested = false;
+uint32_t last_render_time = 0;
+uint8_t* sprite_collision_buffer = NULL;
+uint8_t* bg_collision_buffer = NULL;
+bool bg_collision_detection_enabled = false;
+bool sprite_collision_detected = false;
+bool sprite_bg_collision_detected = false;
+uint8_t collision_detection_mode = 0;
+bool cell_based_sprites_enabled = false;
+uint8_t sprite_cell_width = 8;
+uint8_t sprite_cell_height = 8;
+uint8_t hscroll_mode = 0;
+bool dual_playfield_mode = false;
+bool copper_list_enabled = false;
+uint8_t display_dma_channel = 0;
+
+// Function prototypes
+bool check_if_rp2350();
+void setup_spi_slave();
+void setup_display();
+void display_set_window(uint16_t x, uint16_t y, uint16_t width, uint16_t height);
+void reset_gpu();
+void set_display_mode(uint16_t width, uint16_t height, uint8_t bpp);
+void initialize_default_palette();
+void update_sprite_order();
+void update_sprite_animations();
+void mark_sprite_area_dirty(uint8_t sprite_id);
+void mark_rect_dirty(uint16_t x, uint16_t y, uint16_t width, uint16_t height);
+uint8_t get_pixel_from_tile(uint8_t* data, uint16_t x, uint16_t y, uint16_t width, uint8_t attributes);
+uint8_t get_pixel_from_sprite(uint8_t* data, uint16_t x, uint16_t y, uint16_t width, uint8_t bpp);
+void trigger_copper_execution();
+void compact_sprite_memory();
+void flush_tile_cache();
+void clear_sprites();
+void reset_effects();
+void flush_tile_cache();
+
+// Clock Synchronization Implementation
 // Timing variables for clock synchronization
 volatile uint32_t synced_frame_counter = 0;
 volatile uint64_t master_clock_timestamp = 0;
@@ -2846,3 +3004,673 @@ This comprehensive GPU implementation provides all the features described in the
    - Rotation and scaling of backgrounds
    - High-quality sprite rendering with interpolation (RP2350)
 */
+
+
+// Implementation of missing functions
+bool check_if_rp2350() {
+    // Simple approximation - Need to check hardware registers
+    uint32_t* ram_test = malloc(400 * 1024); // Try to allocate 400KB
+    bool is_rp2350 = (ram_test != NULL);
+
+    if (ram_test != NULL) {
+        free(ram_test);
+    }
+
+    return is_rp2350;
+}
+
+void setup_spi_slave() {
+    // Initialize SPI in slave mode
+    spi_init(SPI_PORT, SPI_FREQUENCY);
+
+    // Configure SPI GPIOs
+    gpio_set_function(SPI_SCK_PIN, GPIO_FUNC_SPI);
+    gpio_set_function(SPI_MOSI_PIN, GPIO_FUNC_SPI);
+    gpio_set_function(SPI_MISO_PIN, GPIO_FUNC_SPI);
+
+    // Set up CS pin (active low)
+    gpio_init(CPU_CS_PIN);
+    gpio_set_dir(CPU_CS_PIN, GPIO_IN);
+    gpio_pull_up(CPU_CS_PIN);
+
+    // Data ready pin (to signal CPU we have data)
+    gpio_init(DATA_READY_PIN);
+    gpio_set_dir(DATA_READY_PIN, GPIO_OUT);
+    gpio_put(DATA_READY_PIN, 0);
+
+    // VSYNC signal to CPU
+    gpio_init(VSYNC_PIN);
+    gpio_set_dir(VSYNC_PIN, GPIO_OUT);
+    gpio_put(VSYNC_PIN, 1);
+
+    // VBLANK notification pin
+    gpio_init(VBLANK_PIN);
+    gpio_set_dir(VBLANK_PIN, GPIO_OUT);
+    gpio_put(VBLANK_PIN, 0);
+}
+
+void setup_display() {
+    // Initialize SPI for display
+    spi_init(DISPLAY_SPI_PORT, 32000000); // 32MHz
+
+    // Configure SPI GPIOs
+    gpio_set_function(DISPLAY_SCK_PIN, GPIO_FUNC_SPI);
+    gpio_set_function(DISPLAY_MOSI_PIN, GPIO_FUNC_SPI);
+
+    // Configure additional display pins
+    gpio_init(DISPLAY_CS_PIN);
+    gpio_set_dir(DISPLAY_CS_PIN, GPIO_OUT);
+    gpio_put(DISPLAY_CS_PIN, 1); // Deselect display
+
+    gpio_init(DISPLAY_DC_PIN);
+    gpio_set_dir(DISPLAY_DC_PIN, GPIO_OUT);
+    gpio_put(DISPLAY_DC_PIN, 1); // Data mode
+
+    gpio_init(DISPLAY_RESET_PIN);
+    gpio_set_dir(DISPLAY_RESET_PIN, GPIO_OUT);
+
+    // Reset display
+    gpio_put(DISPLAY_RESET_PIN, 0);
+    sleep_ms(10);
+    gpio_put(DISPLAY_RESET_PIN, 1);
+    sleep_ms(120);
+
+    // Initialize display - this would be specific to your display type
+    // This example uses a generic ILI9341 or ST7789 compatible display
+
+    // Send initialization commands
+    gpio_put(DISPLAY_CS_PIN, 0);
+
+    // Send initialization commands (example for ILI9341)
+    // Command: software reset
+    gpio_put(DISPLAY_DC_PIN, 0); // Command mode
+    uint8_t cmd = 0x01;
+    spi_write_blocking(DISPLAY_SPI_PORT, &cmd, 1);
+    sleep_ms(5);
+
+    // Command: display on
+    cmd = 0x29;
+    spi_write_blocking(DISPLAY_SPI_PORT, &cmd, 1);
+
+    // Command: memory access control (orientation)
+    cmd = 0x36;
+    spi_write_blocking(DISPLAY_SPI_PORT, &cmd, 1);
+
+    gpio_put(DISPLAY_DC_PIN, 1); // Data mode
+    uint8_t data = 0x08; // Normal orientation
+    spi_write_blocking(DISPLAY_SPI_PORT, &data, 1);
+
+    gpio_put(DISPLAY_CS_PIN, 1); // Deselect display
+}
+
+void display_set_window(uint16_t x, uint16_t y, uint16_t width, uint16_t height) {
+    // Set the active window on the display for subsequent data writes
+    uint16_t x2 = x + width - 1;
+    uint16_t y2 = y + height - 1;
+
+    gpio_put(DISPLAY_CS_PIN, 0);
+
+    // Set column address range
+    gpio_put(DISPLAY_DC_PIN, 0); // Command mode
+    uint8_t cmd = 0x2A;
+    spi_write_blocking(DISPLAY_SPI_PORT, &cmd, 1);
+
+    gpio_put(DISPLAY_DC_PIN, 1); // Data mode
+    uint8_t data[4];
+    data[0] = x >> 8;
+    data[1] = x & 0xFF;
+    data[2] = x2 >> 8;
+    data[3] = x2 & 0xFF;
+    spi_write_blocking(DISPLAY_SPI_PORT, data, 4);
+
+    // Set row address range
+    gpio_put(DISPLAY_DC_PIN, 0); // Command mode
+    cmd = 0x2B;
+    spi_write_blocking(DISPLAY_SPI_PORT, &cmd, 1);
+
+    gpio_put(DISPLAY_DC_PIN, 1); // Data mode
+    data[0] = y >> 8;
+    data[1] = y & 0xFF;
+    data[2] = y2 >> 8;
+    data[3] = y2 & 0xFF;
+    spi_write_blocking(DISPLAY_SPI_PORT, data, 4);
+
+    // Start memory write
+    gpio_put(DISPLAY_DC_PIN, 0); // Command mode
+    cmd = 0x2C;
+    spi_write_blocking(DISPLAY_SPI_PORT, &cmd, 1);
+
+    // Leave CS active - caller will send pixel data next
+}
+
+void reset_gpu() {
+    // Reset GPU state to defaults
+
+    // Clear all layers
+    for (int i = 0; i < MAX_LAYERS; i++) {
+        if (layers[i].tilemap != NULL) {
+            free(layers[i].tilemap);
+            layers[i].tilemap = NULL;
+        }
+
+        if (layers[i].h_scroll_table != NULL) {
+            free(layers[i].h_scroll_table);
+            layers[i].h_scroll_table = NULL;
+        }
+
+        if (layers[i].v_scroll_table != NULL) {
+            free(layers[i].v_scroll_table);
+            layers[i].v_scroll_table = NULL;
+        }
+
+        layers[i].enabled = false;
+        layers[i].rotation_enabled = false;
+    }
+
+    // Clear sprites
+    for (int i = 0; i < MAX_SPRITES; i++) {
+        sprites[i].visible = false;
+    }
+
+    // Reset patterns
+    for (int i = 0; i < MAX_PATTERNS; i++) {
+        sprite_patterns[i].in_use = false;
+    }
+
+    // Clear tile cache
+    for (int i = 0; i < tile_cache_count; i++) {
+        if (tile_cache[i].data != NULL) {
+            free(tile_cache[i].data);
+            tile_cache[i].data = NULL;
+        }
+    }
+    tile_cache_count = 0;
+
+    // Reset special effects
+    effects.fade_level = 0;
+    effects.mosaic_size = 0;
+    effects.window_enabled[0] = false;
+    effects.window_enabled[1] = false;
+    effects.color_math_mode = 0;
+
+    // Clear framebuffer
+    if (framebuffer != NULL) {
+        memset(framebuffer, 0, framebuffer_size);
+    }
+
+    // Reset state variables
+    clear_dirty_regions();
+    sprite_data_used = 0;
+
+    // Reset display mode to default
+    set_display_mode(320, 240, 8);
+
+    // Initialize palette with default colors
+    initialize_default_palette();
+
+    // Reset collision detection
+    if (sprite_collision_buffer != NULL) {
+        memset(sprite_collision_buffer, 0, display_width * display_height / 8);
+    }
+    if (bg_collision_buffer != NULL) {
+        memset(bg_collision_buffer, 0, display_width * display_height / 8);
+    }
+
+    sprite_collision_detected = false;
+    sprite_bg_collision_detected = false;
+
+    // Send acknowledgment
+    send_ack_to_cpu(CMD_RESET_GPU);
+}
+
+void set_display_mode(uint16_t width, uint16_t height, uint8_t bpp) {
+    // Validate parameters
+    if (width == 0 || height == 0 || (bpp != 4 && bpp != 8 && bpp != 16)) {
+        send_error_to_cpu(CMD_SET_DISPLAY_MODE, ERR_INVALID_PARAMETER);
+        return;
+    }
+
+    // Calculate required framebuffer size
+    uint32_t required_size = width * height;
+    if (bpp == 16) {
+        required_size *= 2; // 16-bit = 2 bytes per pixel
+    } else if (bpp == 4) {
+        required_size /= 2; // 4-bit = 2 pixels per byte
+    }
+
+    // Check if we need to reallocate the framebuffer
+    if (required_size > framebuffer_size || framebuffer == NULL) {
+        // Free old framebuffer if it exists
+        if (framebuffer != NULL) {
+            free(framebuffer);
+        }
+
+        // Allocate new framebuffer
+        framebuffer = malloc(required_size);
+        if (framebuffer == NULL) {
+            send_error_to_cpu(CMD_SET_DISPLAY_MODE, ERR_OUT_OF_MEMORY);
+            return;
+        }
+
+        framebuffer_size = required_size;
+    }
+
+    // Update display parameters
+    display_width = width;
+    display_height = height;
+    display_bpp = bpp;
+
+    // Clear framebuffer
+    memset(framebuffer, 0, framebuffer_size);
+
+    // Update dirty region tracking
+    clear_dirty_regions();
+    mark_rect_dirty(0, 0, width, height);
+
+    // If using double buffering, update buffers
+    if (double_buffering_enabled) {
+        front_buffer = framebuffer;
+
+        // Reallocate back buffer if needed
+        if (back_buffer != NULL) {
+            free(back_buffer);
+        }
+
+        back_buffer = malloc(required_size);
+        if (back_buffer != NULL) {
+            memset(back_buffer, 0, required_size);
+            current_draw_buffer = back_buffer;
+        } else {
+            // Failed to allocate back buffer, disable double buffering
+            double_buffering_enabled = false;
+            current_draw_buffer = framebuffer;
+        }
+    } else {
+        current_draw_buffer = framebuffer;
+    }
+
+    // Configure the physical display
+    // This would configure the actual display hardware
+    // For example, sending the appropriate commands to set display mode
+
+    // Send acknowledgment
+    send_ack_to_cpu(CMD_SET_DISPLAY_MODE);
+}
+
+void initialize_default_palette() {
+    // Initialize with a default color palette
+    // First entry (0) is transparent/black
+    palette[0].r = 0;
+    palette[0].g = 0;
+    palette[0].b = 0;
+
+    // Generate a simple rainbow palette
+    for (int i = 1; i < 256; i++) {
+        if (i < 86) {
+            // Red to Yellow
+            palette[i].r = 255;
+            palette[i].g = i * 3;
+            palette[i].b = 0;
+        } else if (i < 171) {
+            // Yellow to Green to Cyan
+            palette[i].r = 255 - ((i - 85) * 3);
+            palette[i].g = 255;
+            palette[i].b = (i - 85) * 3;
+        } else {
+            // Cyan to Blue to Magenta to Red
+            palette[i].r = ((i - 170) * 3);
+            palette[i].g = 255 - ((i - 170) * 3);
+            palette[i].b = 255;
+        }
+    }
+
+    // Set some basic colors at specific indices
+    // Black, White, Red, Green, Blue, Yellow, Cyan, Magenta
+    palette[0].r = 0;   palette[0].g = 0;   palette[0].b = 0;
+    palette[1].r = 255; palette[1].g = 255; palette[1].b = 255;
+    palette[2].r = 255; palette[2].g = 0;   palette[2].b = 0;
+    palette[3].r = 0;   palette[3].g = 255; palette[3].b = 0;
+    palette[4].r = 0;   palette[4].g = 0;   palette[4].b = 255;
+    palette[5].r = 255; palette[5].g = 255; palette[5].b = 0;
+    palette[6].r = 0;   palette[6].g = 255; palette[6].b = 255;
+    palette[7].r = 255; palette[7].g = 0;   palette[7].b = 255;
+}
+
+void update_sprite_order() {
+    // Initialize the sprite order array
+    for (int i = 0; i < MAX_SPRITES; i++) {
+        sprite_order[i] = i;
+    }
+
+    // Sort sprites based on the current ordering mode
+    if (sprite_order_mode == ORDER_BY_YPOS) {
+        // Sort by Y position (bubble sort for simplicity)
+        for (int i = 0; i < MAX_SPRITES - 1; i++) {
+            for (int j = 0; j < MAX_SPRITES - i - 1; j++) {
+                if (!sprites[sprite_order[j]].visible) {
+                    // Move invisible sprites to the end
+                    uint8_t temp = sprite_order[j];
+                    sprite_order[j] = sprite_order[j + 1];
+                    sprite_order[j + 1] = temp;
+                } else if (sprites[sprite_order[j]].visible &&
+                          sprites[sprite_order[j + 1]].visible &&
+                          sprites[sprite_order[j]].y > sprites[sprite_order[j + 1]].y) {
+                    // Swap if y position is greater
+                    uint8_t temp = sprite_order[j];
+                    sprite_order[j] = sprite_order[j + 1];
+                    sprite_order[j + 1] = temp;
+                }
+            }
+        }
+    } else {
+        // Sort by priority (attribute bits 4-5)
+        for (int i = 0; i < MAX_SPRITES - 1; i++) {
+            for (int j = 0; j < MAX_SPRITES - i - 1; j++) {
+                uint8_t prio_j = (sprites[sprite_order[j]].attributes >> 4) & 0x03;
+                uint8_t prio_j1 = (sprites[sprite_order[j + 1]].attributes >> 4) & 0x03;
+
+                if (!sprites[sprite_order[j]].visible) {
+                    // Move invisible sprites to the end
+                    uint8_t temp = sprite_order[j];
+                    sprite_order[j] = sprite_order[j + 1];
+                    sprite_order[j + 1] = temp;
+                } else if (sprites[sprite_order[j]].visible &&
+                          sprites[sprite_order[j + 1]].visible &&
+                          prio_j > prio_j1) {
+                    // Swap if priority is higher (lower value = higher priority)
+                    uint8_t temp = sprite_order[j];
+                    sprite_order[j] = sprite_order[j + 1];
+                    sprite_order[j + 1] = temp;
+                }
+            }
+        }
+    }
+}
+
+void update_sprite_animations() {
+    // Process all sprite animations
+    for (int i = 0; i < MAX_SPRITES; i++) {
+        Sprite* sprite = &sprites[i];
+
+        if (!sprite->visible || !sprite->animated) {
+            continue;
+        }
+
+        // Increment frame counter
+        sprite->frame_counter++;
+
+        // Check if it's time for a new frame
+        if (sprite->frame_counter >= (60 / sprite->frame_rate)) {
+            sprite->frame_counter = 0;
+
+            // Advance to next frame
+            sprite->current_frame += sprite->frame_dir;
+
+            // Handle looping based on mode
+            if (sprite->frame_dir > 0 && sprite->current_frame > sprite->end_frame) {
+                switch (sprite->loop_mode) {
+                    case 0: // Once
+                        sprite->current_frame = sprite->end_frame;
+                        sprite->animated = false; // Stop animation
+                        break;
+
+                    case 1: // Loop
+                        sprite->current_frame = sprite->start_frame;
+                        break;
+
+                    case 2: // Ping-pong
+                        sprite->current_frame = sprite->end_frame - 1;
+                        sprite->frame_dir = -1; // Reverse direction
+                        break;
+                }
+            } else if (sprite->frame_dir < 0 && sprite->current_frame < sprite->start_frame) {
+                switch (sprite->loop_mode) {
+                    case 0: // Once
+                        sprite->current_frame = sprite->start_frame;
+                        sprite->animated = false; // Stop animation
+                        break;
+
+                    case 1: // Loop
+                        sprite->current_frame = sprite->end_frame;
+                        break;
+
+                    case 2: // Ping-pong
+                        sprite->current_frame = sprite->start_frame + 1;
+                        sprite->frame_dir = 1; // Forward direction
+                        break;
+                }
+            }
+
+            // Mark sprite area as dirty
+            mark_sprite_area_dirty(i);
+
+            // Update pattern ID for the sprite based on animation frame
+            sprite->pattern_id = sprite->start_frame +
+                (sprite->current_frame - sprite->start_frame) %
+                (sprite->end_frame - sprite->start_frame + 1);
+        }
+    }
+}
+
+void mark_sprite_area_dirty(uint8_t sprite_id) {
+    if (sprite_id >= MAX_SPRITES || !sprites[sprite_id].visible) {
+        return;
+    }
+
+    // Get sprite pattern
+    uint8_t pattern_id = sprites[sprite_id].pattern_id;
+    if (pattern_id >= MAX_PATTERNS || !sprite_patterns[pattern_id].in_use) {
+        return;
+    }
+
+    // Calculate sprite dimensions
+    uint16_t width = sprite_patterns[pattern_id].width * 8;
+    uint16_t height = sprite_patterns[pattern_id].height * 8;
+
+    // Apply scaling
+    if (sprites[sprite_id].scale != 128) { // 128 represents 1.0 scale
+        width = (width * sprites[sprite_id].scale) / 128;
+        height = (height * sprites[sprite_id].scale) / 128;
+    }
+
+    // Calculate screen position (fixed-point to pixel)
+    int16_t x = sprites[sprite_id].x >> 8;
+    int16_t y = sprites[sprite_id].y >> 8;
+
+    // Add padding to ensure we catch any partially visible edges
+    x -= 1;
+    y -= 1;
+    width += 2;
+    height += 2;
+
+    // Mark the region dirty
+    mark_rect_dirty(x, y, width, height);
+}
+
+void mark_rect_dirty(uint16_t x, uint16_t y, uint16_t width, uint16_t height) {
+    // Clip rectangle to screen bounds
+    if (x >= display_width) return;
+    if (y >= display_height) return;
+
+    if (x + width > display_width) width = display_width - x;
+    if (y + height > display_height) height = display_height - y;
+
+    // Check if we can merge with an existing dirty region
+    for (int i = 0; i < dirty_region_count; i++) {
+        Rect* r = &dirty_regions[i];
+
+        // Calculate rectangle bounds
+        uint16_t r1_x1 = r->x;
+        uint16_t r1_y1 = r->y;
+        uint16_t r1_x2 = r->x + r->width;
+        uint16_t r1_y2 = r->y + r->height;
+
+        uint16_t r2_x1 = x;
+        uint16_t r2_y1 = y;
+        uint16_t r2_x2 = x + width;
+        uint16_t r2_y2 = y + height;
+
+        // Check if rectangles are adjacent or overlapping
+        if (!(r1_x2 < r2_x1 || r2_x2 < r1_x1 || r1_y2 < r2_y1 || r2_y2 < r1_y1)) {
+            // Merge rectangles by creating a new bounding rectangle
+            uint16_t new_x1 = min(r1_x1, r2_x1);
+            uint16_t new_y1 = min(r1_y1, r2_y1);
+            uint16_t new_x2 = max(r1_x2, r2_x2);
+            uint16_t new_y2 = max(r1_y2, r2_y2);
+
+            r->x = new_x1;
+            r->y = new_y1;
+            r->width = new_x2 - new_x1;
+            r->height = new_y2 - new_y1;
+
+            // If the merged region is too large, just mark the whole screen
+            if (r->width * r->height > (display_width * display_height) / 2) {
+                dirty_regions[0].x = 0;
+                dirty_regions[0].y = 0;
+                dirty_regions[0].width = display_width;
+                dirty_regions[0].height = display_height;
+                dirty_region_count = 1;
+            }
+
+            return;
+        }
+    }
+
+    // Add as a new dirty region if we have space
+    if (dirty_region_count < MAX_DIRTY_REGIONS) {
+        Rect* r = &dirty_regions[dirty_region_count++];
+        r->x = x;
+        r->y = y;
+        r->width = width;
+        r->height = height;
+    } else {
+        // Too many regions, just mark the whole screen
+        dirty_regions[0].x = 0;
+        dirty_regions[0].y = 0;
+        dirty_regions[0].width = display_width;
+        dirty_regions[0].height = display_height;
+        dirty_region_count = 1;
+    }
+}
+
+uint8_t get_pixel_from_tile(uint8_t* data, uint16_t x, uint16_t y, uint16_t width, uint8_t attributes) {
+    // Apply flipping
+    bool flip_x = (attributes & 0x01) != 0;
+    bool flip_y = (attributes & 0x02) != 0;
+
+    if (flip_x) x = width - 1 - x;
+    if (flip_y) y = width - 1 - y; // Assume height = width for simplicity
+
+    // Get pixel value at the specified position
+    uint32_t pos = y * width + x;
+    return data[pos];
+}
+
+uint8_t get_pixel_from_sprite(uint8_t* data, uint16_t x, uint16_t y, uint16_t width, uint8_t bpp) {
+    uint32_t pixel_pos;
+    uint8_t pixel_value;
+
+    if (bpp == 4) {
+        // 4-bit: 2 pixels per byte
+        pixel_pos = (y * width + x) / 2;
+        if (x & 1) {
+            // Odd pixel: low nibble
+            pixel_value = data[pixel_pos] & 0x0F;
+        } else {
+            // Even pixel: high nibble
+            pixel_value = (data[pixel_pos] >> 4) & 0x0F;
+        }
+    } else if (bpp == 8) {
+        // 8-bit: 1 pixel per byte
+        pixel_pos = y * width + x;
+        pixel_value = data[pixel_pos];
+    } else if (bpp == 16) {
+        // 16-bit: 2 bytes per pixel - we return just a simple 8-bit value for this function
+        pixel_pos = (y * width + x) * 2;
+        pixel_value = data[pixel_pos]; // Just the low byte for simplicity
+    } else {
+        pixel_value = 0; // Unsupported bit depth
+    }
+
+    return pixel_value;
+}
+
+void trigger_copper_execution() {
+    // Copper list is a series of commands executed at specific scanlines
+    if (!copper_list_enabled) return;
+
+    // Need to parse and execute the copper list
+    // Here we don't implement the full functionality
+
+    // Example implementation would:
+    // 1. Process each command in the copper list
+    // 2. Check if the current scanline matches the wait condition
+    // 3. Execute the command when the condition is met
+}
+
+void compact_sprite_memory() {
+    // Allocate temporary buffer
+    uint8_t* temp_buffer = malloc(sprite_data_size);
+    if (temp_buffer == NULL) {
+        return; // Can't compact without temporary space
+    }
+
+    // Copy used patterns to temporary buffer and update offsets
+    uint32_t current_offset = 0;
+
+    for (int i = 0; i < MAX_PATTERNS; i++) {
+        if (sprite_patterns[i].in_use) {
+            // Copy pattern data to temporary buffer
+            memcpy(temp_buffer + current_offset,
+                   sprite_data + sprite_patterns[i].data_offset,
+                   sprite_patterns[i].data_size);
+
+            // Update offset
+            sprite_patterns[i].data_offset = current_offset;
+
+            // Move to next position
+            current_offset += sprite_patterns[i].data_size;
+        }
+    }
+
+    // Copy back from temporary buffer
+    memcpy(sprite_data, temp_buffer, sprite_data_used);
+
+    // Free temporary buffer
+    free(temp_buffer);
+}
+
+void flush_tile_cache() {
+    // Free all tile cache memory
+    for (int i = 0; i < tile_cache_count; i++) {
+        if (tile_cache[i].data != NULL) {
+            free(tile_cache[i].data);
+            tile_cache[i].data = NULL;
+        }
+    }
+
+    // Reset cache count
+    tile_cache_count = 0;
+}
+
+void clear_sprites() {
+    // Hide all sprites
+    for (int i = 0; i < MAX_SPRITES; i++) {
+        sprites[i].visible = false;
+    }
+
+    // Mark the entire screen as dirty
+    mark_rect_dirty(0, 0, display_width, display_height);
+}
+
+void reset_effects() {
+    // Reset all visual effects to default state
+    effects.fade_level = 0;
+    effects.mosaic_size = 0;
+    effects.window_enabled[0] = false;
+    effects.window_enabled[1] = false;
+    effects.color_math_mode = 0;
+
+    // Mark the entire screen as dirty
+    mark_rect_dirty(0, 0, display_width, display_height);
+}
