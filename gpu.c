@@ -44,6 +44,225 @@ Graphics pipeline:
   6. Display output via SPI/parallel interface
 */
 
+// Clock Synchronization Implementation
+
+// Timing variables for clock synchronization
+volatile uint32_t synced_frame_counter = 0;
+volatile uint64_t master_clock_timestamp = 0;
+volatile uint64_t local_clock_offset = 0;
+
+void process_clock_sync_command(const uint8_t* data) {
+    // Extract frame counter and timestamp from command
+    uint32_t cpu_frame_counter =
+        ((uint32_t)data[0] << 24) |
+        ((uint32_t)data[1] << 16) |
+        ((uint32_t)data[2] << 8) |
+        (uint32_t)data[3];
+
+    uint64_t cpu_timestamp =
+        ((uint64_t)data[4] << 32) |
+        ((uint64_t)data[5] << 24) |
+        ((uint64_t)data[6] << 16) |
+        ((uint64_t)data[7] << 8) |
+        (uint64_t)data[8];
+
+    // Get local timestamp at the moment of receiving sync
+    uint64_t local_timestamp = time_us_64();
+
+    // Calculate clock offset (difference between CPU and local time)
+    local_clock_offset = cpu_timestamp - local_timestamp;
+
+    // Update synced frame counter
+    synced_frame_counter = cpu_frame_counter;
+
+    // Store master timestamp
+    master_clock_timestamp = cpu_timestamp;
+
+    // Send acknowledgment
+    send_ack_to_cpu(0xF1);
+
+    if (debug_enabled) {
+        printf("Clock sync received: frame=%lu offset=%lld\n",
+               synced_frame_counter, local_clock_offset);
+    }
+}
+
+// Convert local time to master time
+uint64_t get_master_time() {
+    return time_us_64() + local_clock_offset;
+}
+
+//GPU Command Acknowledgment
+void send_ack_to_cpu(uint8_t command_id) {
+    // Prepare acknowledgment packet
+    uint8_t ack_packet[4] = {
+        0xFA,        // ACK command ID
+        4,           // Packet length
+        command_id,  // Original command being acknowledged
+        0            // Status (0 = success)
+    };
+
+    // Wait for CPU to be ready to receive response
+    while (gpio_get(CPU_CS_PIN) == 0) {
+        sleep_us(10);
+    }
+
+    // Signal that we have data to send
+    gpio_put(DATA_READY_PIN, 1);
+
+    // Wait for CPU to assert CS (begin reading)
+    uint32_t timeout = 1000; // 1ms timeout
+    while (gpio_get(CPU_CS_PIN) == 1 && timeout > 0) {
+        sleep_us(1);
+        timeout--;
+    }
+
+    // If CPU responded, send the acknowledgment
+    if (timeout > 0) {
+        spi_write_blocking(SPI_PORT, ack_packet, 4);
+    }
+
+    // Clear data ready signal
+    gpio_put(DATA_READY_PIN, 0);
+}
+
+void send_error_to_cpu(uint8_t command_id, uint8_t error_code) {
+    // Prepare error packet
+    uint8_t error_packet[4] = {
+        0xFE,        // Error command ID
+        4,           // Packet length
+        command_id,  // Original command with error
+        error_code   // Error code
+    };
+
+    // Similar pattern as acknowledgment sending
+    // Wait for CPU to be ready
+    while (gpio_get(CPU_CS_PIN) == 0) {
+        sleep_us(10);
+    }
+
+    gpio_put(DATA_READY_PIN, 1);
+
+    uint32_t timeout = 1000;
+    while (gpio_get(CPU_CS_PIN) == 1 && timeout > 0) {
+        sleep_us(1);
+        timeout--;
+    }
+
+    if (timeout > 0) {
+        spi_write_blocking(SPI_PORT, error_packet, 4);
+    }
+
+    gpio_put(DATA_READY_PIN, 0);
+}
+
+// GPU Error Management
+
+// Error handling state
+volatile bool in_error_recovery = false;
+volatile ErrorCode current_error = ERR_NONE;
+volatile uint32_t last_error_time = 0;
+volatile uint32_t error_count = 0;
+
+void handle_error(ErrorCode code, uint8_t command_id) {
+    // Update error state
+    current_error = code;
+    last_error_time = time_ms_32();
+    error_count++;
+
+    // Log error locally
+    if (debug_enabled) {
+        printf("Error %d for command 0x%02X\n", code, command_id);
+    }
+
+    // Send error notification to CPU
+    send_error_to_cpu(command_id, code);
+
+    // For serious errors, enter recovery mode
+    if (code == ERR_MEMORY_FULL || code == ERR_SYNC_LOST ||
+        code == ERR_COMMUNICATION_FAILURE) {
+        in_error_recovery = true;
+
+        // Take error-specific recovery actions
+        switch (code) {
+            case ERR_MEMORY_FULL:
+                // Try to free resources
+                emergency_memory_cleanup();
+                break;
+
+            case ERR_SYNC_LOST:
+                // Prepare for resynchronization
+                reset_sync_state();
+                break;
+
+            case ERR_COMMUNICATION_FAILURE:
+                // Reset communication hardware
+                reset_spi_interface();
+                break;
+
+            default:
+                break;
+        }
+    }
+}
+
+void emergency_memory_cleanup() {
+    // For GPU:
+    #ifdef GPU_IMPLEMENTATION
+    // Free least-critical resources
+    flush_tile_cache(); // Clear entire tile cache
+    clear_sprites(); // Remove all sprites
+    reset_effects(); // Disable all effects
+    #endif
+
+    // For APU:
+    #ifdef APU_IMPLEMENTATION
+    // Free sound resources
+    stop_all_sounds();
+    clear_unused_samples();
+    reset_effects();
+    #endif
+
+    // Mark recovery complete
+    in_error_recovery = false;
+
+    if (debug_enabled) {
+        printf("Emergency memory cleanup complete\n");
+    }
+}
+
+void reset_sync_state() {
+    // Reset timing variables to prepare for new sync
+    synced_frame_counter = 0;
+    local_clock_offset = 0;
+
+    // Mark as ready for resyncing
+    in_error_recovery = false;
+
+    if (debug_enabled) {
+        printf("Reset sync state, waiting for master sync\n");
+    }
+}
+
+void reset_spi_interface() {
+    // Reinitialize SPI peripheral
+    spi_deinit(SPI_PORT);
+    sleep_ms(5);
+    spi_init(SPI_PORT, SPI_FREQUENCY);
+
+    // Reconfigure SPI pins
+    gpio_set_function(SPI_SCK_PIN, GPIO_FUNC_SPI);
+    gpio_set_function(SPI_MOSI_PIN, GPIO_FUNC_SPI);
+    gpio_set_function(SPI_MISO_PIN, GPIO_FUNC_SPI);
+
+    // Reset SPI state machine
+    in_error_recovery = false;
+
+    if (debug_enabled) {
+        printf("SPI interface reset complete\n");
+    }
+}
+
 // Command Processing System
 void process_command(uint8_t cmd_id, const uint8_t* data, uint8_t length) {
     switch (cmd_id) {
@@ -65,7 +284,17 @@ void process_command(uint8_t cmd_id, const uint8_t* data, uint8_t length) {
                 set_display_mode(width, height, bpp);
             }
             break;
-        
+
+        // VBLANK
+        case CMD_SET_VBLANK_CALLBACK:
+            vblank_callback_enabled = data[0] != 0;
+            send_ack_to_cpu(CMD_SET_VBLANK_CALLBACK);
+            break;
+
+        case CMD_VSYNC_WAIT:
+            cmd_vsync_wait();
+            break;
+
         // Palette Commands
         case CMD_SET_PALETTE_ENTRY:
             set_palette_entry(data[0], data[1], data[2], data[3]);
@@ -168,13 +397,47 @@ void process_command(uint8_t cmd_id, const uint8_t* data, uint8_t length) {
     }
 }
 
+// VSYNC handling variables
+volatile bool vsync_occurred = false;
+volatile bool vsync_wait_pending = false;
+volatile bool core1_vsync_flag = false;
+bool vblank_callback_enabled = false;
+
 // Implementing VSYNC_WAIT Command
 void cmd_vsync_wait() {
-    while (!vsync_occurred) {
-        tight_loop_contents(); // Wait for next VSYNC
-    }
+
+    // Reset vsync flag before waiting
     vsync_occurred = false;
-    send_ack_to_cpu(CMD_VSYNC_WAIT);
+
+    // Signal that we're waiting for vsync
+    vsync_wait_pending = true;
+
+    // Note: We don't block here in the SPI handler thread
+    // The acknowledgment will be sent when vsync actually occurs
+    // The actual waiting and acknowledgment happens in core0_main loop
+}
+
+bool check_vsync_signal() {
+    // Method 1: Check a flag set by Core 1 rendering loop
+    if (core1_vsync_flag) {
+        core1_vsync_flag = false;
+        return true;
+    }
+
+    /*
+    // Method 2: Check hardware VSYNC pin from display (if available)
+    static bool prev_vsync_pin = true;
+    bool current_vsync_pin = gpio_get(DISPLAY_VSYNC_PIN);
+
+    // Detect falling edge (active low VSYNC)
+    if (prev_vsync_pin && !current_vsync_pin) {
+        prev_vsync_pin = current_vsync_pin;
+        return true;
+    }
+    */
+
+    prev_vsync_pin = current_vsync_pin;
+    return false;
 }
 
 // Improved Memory Error Handling
@@ -1935,7 +2198,17 @@ void core1_rendering_loop() {
             
             // Send frame to display
             send_frame_to_display();
-            
+
+            // Signal VSYNC to Core 0
+            core1_vsync_flag = true;
+
+            // Signal CPU that frame is complete (if callback enabled)
+            if (vblank_callback_enabled) {
+                gpio_put(VBLANK_PIN, 1);
+                sleep_us(10);
+                gpio_put(VBLANK_PIN, 0);
+            }
+
             // Clear dirty regions for next frame
             clear_dirty_regions();
             
@@ -2057,7 +2330,27 @@ int main() {
             if (length > 2) {
                 spi_read_blocking(CPU_SPI_PORT, 0xFF, cmd_buffer, length - 2);
             }
-            
+
+            // Check for VSYNC event from display hardware or Core 1
+            bool vsync_detected = check_vsync_signal();
+            if (vsync_detected) {
+                vsync_occurred = true;
+
+                // If CPU is waiting for VSYNC, send acknowledgment now
+                if (vsync_wait_pending) {
+                    send_ack_to_cpu(CMD_VSYNC_WAIT);
+                    vsync_wait_pending = false;
+                }
+
+                // Handle other vsync-dependent processing
+                if (copper_list_enabled) {
+                    trigger_copper_execution();
+                }
+
+                // Reset flag after processing
+                vsync_occurred = false;
+            }
+
             // Process the command
             process_command(cmd_id, cmd_buffer, length - 2);
         }

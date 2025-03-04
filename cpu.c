@@ -137,6 +137,80 @@ void init_hardware() {
     printf("Hardware initialization complete\n");
 }
 
+// Clock Synchronization Implementation
+// Global timing variables
+volatile uint32_t global_frame_counter = 0;
+volatile uint64_t master_clock_timestamp = 0;
+const uint32_t SYNC_INTERVAL_MS = 1000; // Sync every second
+uint32_t last_sync_time = 0;
+
+void init_clock_synchronization() {
+    // Initialize master clock timestamp at boot
+    master_clock_timestamp = time_us_64();
+    last_sync_time = time_ms_32();
+
+    // Setup periodic sync timer using hardware timer
+    hardware_timer_init(TIMER_SYNC, SYNC_INTERVAL_MS, send_clock_sync);
+}
+
+void send_clock_sync() {
+    // Update master timestamp
+    master_clock_timestamp = time_us_64();
+
+    // Send clock sync to GPU
+    uint8_t gpu_sync_cmd[10] = {
+        0xF1,                             // Clock sync command ID
+        10,                               // Command length
+        (global_frame_counter >> 24) & 0xFF, // Frame counter bytes
+        (global_frame_counter >> 16) & 0xFF,
+        (global_frame_counter >> 8) & 0xFF,
+        global_frame_counter & 0xFF,
+        (master_clock_timestamp >> 32) & 0xFF, // Timestamp bytes (high)
+        (master_clock_timestamp >> 24) & 0xFF,
+        (master_clock_timestamp >> 16) & 0xFF,
+        (master_clock_timestamp >> 8) & 0xFF
+    };
+
+    // Critical section - ensure atomic access to SPI
+    mutex_enter_blocking(&spi_mutex);
+
+    // Send to GPU with high priority
+    gpio_put(GPU_CS_PIN, 0);
+    spi_write_blocking(GPU_SPI_PORT, gpu_sync_cmd, 10);
+    // Wait for acknowledgment
+    uint8_t ack = 0;
+    spi_read_blocking(GPU_SPI_PORT, 0xFF, &ack, 1);
+    gpio_put(GPU_CS_PIN, 1);
+
+    // Send to APU with high priority
+    gpio_put(APU_CS_PIN, 0);
+    spi_write_blocking(APU_SPI_PORT, gpu_sync_cmd, 10);
+    // Wait for acknowledgment
+    spi_read_blocking(APU_SPI_PORT, 0xFF, &ack, 1);
+    gpio_put(APU_CS_PIN, 1);
+
+    mutex_exit(&spi_mutex);
+
+    // Log sync for debugging
+    if (debug_enabled) {
+        printf("Clock sync sent: frame=%lu timestamp=%llu\n",
+               global_frame_counter, master_clock_timestamp);
+    }
+}
+
+// Called every frame in the main game loop
+void update_frame_timing() {
+    // Increment frame counter
+    global_frame_counter++;
+
+    // Trigger periodic clock sync if needed
+    uint32_t current_time = time_ms_32();
+    if (current_time - last_sync_time >= SYNC_INTERVAL_MS) {
+        send_clock_sync();
+        last_sync_time = current_time;
+    }
+}
+
 // Command Queue Management
 // Command structure for GPU and APU
 typedef struct {
@@ -327,6 +401,248 @@ void process_apu_queue() {
         // Brief delay between commands
         sleep_us(10);
     }
+}
+
+// CPU Reception of Acknowledgments
+
+void process_ack_packet(uint8_t device_id, uint8_t* packet) {
+    // Extract original command ID and status
+    uint8_t cmd_id = packet[2];
+    uint8_t status = packet[3];
+
+    // Get appropriate command queue
+    EnhancedCommandQueue* queue = (device_id == 1) ? &gpu_queue : &apu_queue;
+
+    mutex_enter_blocking(&queue->lock);
+
+    // Find the command in the queue
+    int found = 0;
+    uint16_t index = queue->head;
+    for (uint16_t i = 0; i < queue->count; i++) {
+        EnhancedCommand* cmd = &queue->commands[index];
+        if (cmd->command_id == cmd_id && cmd->requires_ack && !cmd->completed) {
+            // Mark command as completed
+            cmd->completed = true;
+            found = 1;
+
+            if (debug_enabled) {
+                printf("Received ACK for command 0x%02X from device %d\n",
+                      cmd_id, device_id);
+            }
+
+            break;
+        }
+        index = (index + 1) % queue->capacity;
+    }
+
+    mutex_exit(&queue->lock);
+
+    if (!found && debug_enabled) {
+        printf("Received ACK for unknown command 0x%02X\n", cmd_id);
+    }
+}
+
+void check_for_device_responses() {
+    // Check GPU data ready pin
+    if (gpio_get(GPU_DATA_READY_PIN)) {
+        // Read response from GPU
+        uint8_t response[4];
+
+        gpio_put(GPU_CS_PIN, 0);
+        spi_read_blocking(GPU_SPI_PORT, 0xFF, response, 4);
+        gpio_put(GPU_CS_PIN, 1);
+
+        // Process based on response type
+        if (response[0] == 0xFA) {
+            // Acknowledgment
+            process_ack_packet(1, response);
+        } else if (response[0] == 0xFE) {
+            // Error
+            process_error_packet(1, response);
+        }
+    }
+
+    // Check APU data ready pin
+    if (gpio_get(APU_DATA_READY_PIN)) {
+        // Read response from APU
+        uint8_t response[4];
+
+        gpio_put(APU_CS_PIN, 0);
+        spi_read_blocking(APU_SPI_PORT, 0xFF, response, 4);
+        gpio_put(APU_CS_PIN, 1);
+
+        // Process based on response type
+        if (response[0] == 0xFA) {
+            // Acknowledgment
+            process_ack_packet(2, response);
+        } else if (response[0] == 0xFE) {
+            // Error
+            process_error_packet(2, response);
+        }
+    }
+}
+
+// CPU Error Recovery System
+
+typedef enum {
+    ERR_NONE = 0,
+    ERR_TIMEOUT = 1,
+    ERR_INVALID_COMMAND = 2,
+    ERR_MEMORY_FULL = 3,
+    ERR_INVALID_PARAMETER = 4,
+    ERR_DEVICE_BUSY = 5,
+    ERR_COMMUNICATION_FAILURE = 6,
+    ERR_SYNC_LOST = 7
+} ErrorCode;
+
+typedef struct {
+    uint8_t device_id;    // 1=GPU, 2=APU
+    ErrorCode error_code;
+    uint8_t command_id;
+    uint32_t timestamp;
+    bool handled;
+} ErrorRecord;
+
+#define ERROR_LOG_SIZE 32
+ErrorRecord error_log[ERROR_LOG_SIZE];
+uint8_t error_log_index = 0;
+uint8_t unhandled_errors = 0;
+
+void log_error(uint8_t device_id, ErrorCode code, uint8_t cmd_id) {
+    // Add to error log
+    ErrorRecord* record = &error_log[error_log_index];
+    record->device_id = device_id;
+    record->error_code = code;
+    record->command_id = cmd_id;
+    record->timestamp = time_ms_32();
+    record->handled = false;
+
+    // Increment counters
+    error_log_index = (error_log_index + 1) % ERROR_LOG_SIZE;
+    unhandled_errors++;
+
+    // Log error for debugging
+    if (debug_enabled) {
+        const char* device = (device_id == 1) ? "GPU" : "APU";
+        printf("ERROR: %s cmd 0x%02X error code %d\n", device, cmd_id, code);
+    }
+}
+
+void process_error_packet(uint8_t device_id, uint8_t* packet) {
+    uint8_t cmd_id = packet[2];
+    uint8_t error_code = packet[3];
+
+    // Log the error
+    log_error(device_id, error_code, cmd_id);
+
+    // Handle specific errors
+    handle_device_error(device_id, error_code, cmd_id);
+}
+
+void handle_device_error(uint8_t device_id, ErrorCode error_code, uint8_t cmd_id) {
+    switch (error_code) {
+        case ERR_MEMORY_FULL:
+            // Device ran out of memory - try recovery
+            if (device_id == 1) {
+                // GPU memory issue - try to free resources
+                queue_gpu_command(0xD0, 2, NULL); // Request memory cleanup
+            } else {
+                // APU memory issue
+                queue_apu_command(0xD0, 2, NULL); // Request memory cleanup
+            }
+            break;
+
+        case ERR_SYNC_LOST:
+            // Synchronization lost - initiate resync
+            send_clock_sync();
+            break;
+
+        case ERR_DEVICE_BUSY:
+            // Device is busy, retry later
+            sleep_ms(5); // Small delay before retrying
+            break;
+
+        case ERR_COMMUNICATION_FAILURE:
+            // Serious communication issue - try resetting the interface
+            reset_communication_interface(device_id);
+            break;
+
+        default:
+            // Log but don't take specific action for other errors
+            if (debug_enabled) {
+                printf("Unhandled error %d from device %d\n", error_code, device_id);
+            }
+            break;
+    }
+}
+
+void reset_communication_interface(uint8_t device_id) {
+    if (device_id == 1) {
+        // Reset GPU communication
+        spi_deinit(GPU_SPI_PORT);
+        sleep_ms(10);
+        spi_init(GPU_SPI_PORT, 20000000); // 20MHz
+        gpio_set_function(GPU_SCK_PIN, GPIO_FUNC_SPI);
+        gpio_set_function(GPU_MOSI_PIN, GPIO_FUNC_SPI);
+        gpio_set_function(GPU_MISO_PIN, GPIO_FUNC_SPI);
+
+        // Send reset signal
+        gpio_put(GPU_RESET_PIN, 0);
+        sleep_ms(10);
+        gpio_put(GPU_RESET_PIN, 1);
+        sleep_ms(50); // Give time for GPU to reset
+
+        // Re-initialize GPU
+        initialize_gpu();
+    } else {
+        // Reset APU communication (similar pattern)
+        spi_deinit(APU_SPI_PORT);
+        sleep_ms(10);
+        spi_init(APU_SPI_PORT, 20000000);
+        gpio_set_function(APU_SCK_PIN, GPIO_FUNC_SPI);
+        gpio_set_function(APU_MOSI_PIN, GPIO_FUNC_SPI);
+        gpio_set_function(APU_MISO_PIN, GPIO_FUNC_SPI);
+
+        gpio_put(APU_RESET_PIN, 0);
+        sleep_ms(10);
+        gpio_put(APU_RESET_PIN, 1);
+        sleep_ms(50);
+
+        initialize_apu();
+    }
+
+    // Log recovery attempt
+    if (debug_enabled) {
+        printf("Communication interface for device %d reset\n", device_id);
+    }
+}
+
+bool check_device_health(uint8_t device_id) {
+    // Send ping command
+    uint8_t ping_cmd[2] = {0xF0, 2}; // NOP command
+    uint8_t response = 0;
+    bool success = false;
+
+    if (device_id == 1) {
+        gpio_put(GPU_CS_PIN, 0);
+        spi_write_blocking(GPU_SPI_PORT, ping_cmd, 2);
+        spi_read_blocking(GPU_SPI_PORT, 0xFF, &response, 1);
+        gpio_put(GPU_CS_PIN, 1);
+    } else {
+        gpio_put(APU_CS_PIN, 0);
+        spi_write_blocking(APU_SPI_PORT, ping_cmd, 2);
+        spi_read_blocking(APU_SPI_PORT, 0xFF, &response, 1);
+        gpio_put(APU_CS_PIN, 1);
+    }
+
+    // Response should be 0xAA for healthy device
+    success = (response == 0xAA);
+
+    if (!success && debug_enabled) {
+        printf("Device %d health check failed\n", device_id);
+    }
+
+    return success;
 }
 
 // Improved Command Queue Error Handling
@@ -1224,6 +1540,101 @@ void update_game() {
     
     // Update frame counter
     frame_counter++;
+}
+
+// Main game loop with enhanced synchronization
+void run_enhanced_game_loop() {
+    // Game loop variables
+    uint32_t frame_start_time;
+    uint32_t frame_time;
+    const uint32_t TARGET_FRAME_TIME = 16667; // 60fps in microseconds
+
+    while (true) {
+        // Start frame timing
+        frame_start_time = time_us_32();
+
+        // Check for responses from GPU/APU
+        check_for_device_responses();
+
+        // Update frame counter and sync
+        update_frame_timing();
+
+        // Check device health periodically (every 10 frames)
+        if (global_frame_counter % 10 == 0) {
+            if (!check_device_health(1)) {
+                // GPU health check failed
+                handle_device_failure(1);
+            }
+
+            if (!check_device_health(2)) {
+                // APU health check failed
+                handle_device_failure(2);
+            }
+        }
+
+        // Update game state only if devices are healthy
+        if (!in_system_recovery) {
+            process_input();
+            update_game_state();
+            prepare_rendering();
+        } else {
+            // In recovery mode - display error screen
+            display_system_error();
+        }
+
+        // Process command queues regardless of game state
+        // (allows recovery commands to be sent)
+        process_enhanced_queue(&gpu_queue);
+        process_enhanced_queue(&apu_queue);
+
+        // Calculate frame time
+        frame_time = time_us_32() - frame_start_time;
+
+        // Sleep to maintain target frame rate
+        if (frame_time < TARGET_FRAME_TIME) {
+            sleep_us(TARGET_FRAME_TIME - frame_time);
+        } else if (frame_time > TARGET_FRAME_TIME + 5000) {
+            // Frame took too long (>5ms over budget)
+            if (debug_enabled) {
+                printf("Frame time: %lu us (over budget)\n", frame_time);
+            }
+        }
+    }
+}
+
+void handle_device_failure(uint8_t device_id) {
+    // Mark system as in recovery
+    in_system_recovery = true;
+
+    // Log the failure
+    if (debug_enabled) {
+        printf("CRITICAL: Device %d failure detected\n", device_id);
+    }
+
+    // Attempt recovery steps
+    if (device_id == 1) {
+        // GPU recovery
+        gpu_recovery_attempts++;
+
+        if (gpu_recovery_attempts <= MAX_RECOVERY_ATTEMPTS) {
+            reset_communication_interface(1);
+            send_gpu_reset_command();
+        } else {
+            // Too many failed attempts
+            system_error = ERR_GPU_FAILURE;
+        }
+    } else {
+        // APU recovery
+        apu_recovery_attempts++;
+
+        if (apu_recovery_attempts <= MAX_RECOVERY_ATTEMPTS) {
+            reset_communication_interface(2);
+            send_apu_reset_command();
+        } else {
+            // Too many failed attempts
+            system_error = ERR_APU_FAILURE;
+        }
+    }
 }
 
 // Main Game Loop

@@ -43,6 +43,400 @@ Audio pipeline:
   6. Output via PWM or I2S
 */
 
+// Clock Synchronization Implementation
+// Timing variables for clock synchronization
+volatile uint32_t synced_frame_counter = 0;
+volatile uint64_t master_clock_timestamp = 0;
+volatile uint64_t local_clock_offset = 0;
+
+void process_clock_sync_command(const uint8_t* data) {
+    // Extract frame counter and timestamp from command
+    uint32_t cpu_frame_counter =
+        ((uint32_t)data[0] << 24) |
+        ((uint32_t)data[1] << 16) |
+        ((uint32_t)data[2] << 8) |
+        (uint32_t)data[3];
+
+    uint64_t cpu_timestamp =
+        ((uint64_t)data[4] << 32) |
+        ((uint64_t)data[5] << 24) |
+        ((uint64_t)data[6] << 16) |
+        ((uint64_t)data[7] << 8) |
+        (uint64_t)data[8];
+
+    // Get local timestamp at the moment of receiving sync
+    uint64_t local_timestamp = time_us_64();
+
+    // Calculate clock offset (difference between CPU and local time)
+    local_clock_offset = cpu_timestamp - local_timestamp;
+
+    // Update synced frame counter
+    synced_frame_counter = cpu_frame_counter;
+
+    // Store master timestamp
+    master_clock_timestamp = cpu_timestamp;
+
+    // Send acknowledgment
+    send_ack_to_cpu(0xF1);
+
+    if (debug_enabled) {
+        printf("Clock sync received: frame=%lu offset=%lld\n",
+               synced_frame_counter, local_clock_offset);
+    }
+}
+
+// Convert local time to master time
+uint64_t get_master_time() {
+    return time_us_64() + local_clock_offset;
+}
+
+// Handshaking Protocols
+typedef struct {
+    uint8_t command_id;
+    uint8_t length;
+    uint8_t data[256];
+    bool requires_ack;
+    uint32_t timestamp;
+    uint8_t retry_count;
+    bool completed;
+} EnhancedCommand;
+
+typedef struct {
+    EnhancedCommand* commands;
+    uint16_t capacity;
+    uint16_t head;
+    uint16_t tail;
+    uint16_t count;
+    mutex_t lock;
+    uint16_t pending_acks;
+    uint8_t device_id; // 1=GPU, 2=APU
+} EnhancedCommandQueue;
+
+EnhancedCommandQueue gpu_queue;
+EnhancedCommandQueue apu_queue;
+const uint32_t COMMAND_TIMEOUT_MS = 50; // 50ms timeout for command response
+const uint8_t MAX_RETRIES = 3;
+
+// Improved command queuing with acknowledgment tracking
+bool queue_command_with_ack(EnhancedCommandQueue* queue, uint8_t cmd_id,
+                           uint8_t length, const uint8_t* data, bool needs_ack) {
+    mutex_enter_blocking(&queue->lock);
+
+    // Check if queue is full
+    if (queue->count >= queue->capacity) {
+        mutex_exit(&queue->lock);
+        send_error_to_cpu(ERROR_QUEUE_FULL);
+        return false;
+    }
+
+    // Add command to queue
+    EnhancedCommand* cmd = &queue->commands[queue->tail];
+    cmd->command_id = cmd_id;
+    cmd->length = length;
+    memcpy(cmd->data, data, length - 2);
+    cmd->requires_ack = needs_ack;
+    cmd->timestamp = time_ms_32();
+    cmd->retry_count = 0;
+    cmd->completed = false;
+
+    // If this command requires ack, increment pending count
+    if (needs_ack) {
+        queue->pending_acks++;
+    }
+
+    // Update queue pointers
+    queue->tail = (queue->tail + 1) % queue->capacity;
+    queue->count++;
+
+    mutex_exit(&queue->lock);
+    return true;
+}
+
+// APU Command Acknowledgment
+
+void send_ack_to_cpu(uint8_t command_id) {
+    // Prepare acknowledgment packet
+    uint8_t ack_packet[4] = {
+        0xFA,        // ACK command ID
+        4,           // Packet length
+        command_id,  // Original command being acknowledged
+        0            // Status (0 = success)
+    };
+
+    // Wait for CPU to be ready to receive response
+    while (gpio_get(CPU_CS_PIN) == 0) {
+        sleep_us(10);
+    }
+
+    // Signal that we have data to send
+    gpio_put(DATA_READY_PIN, 1);
+
+    // Wait for CPU to assert CS (begin reading)
+    uint32_t timeout = 1000; // 1ms timeout
+    while (gpio_get(CPU_CS_PIN) == 1 && timeout > 0) {
+        sleep_us(1);
+        timeout--;
+    }
+
+    // If CPU responded, send the acknowledgment
+    if (timeout > 0) {
+        spi_write_blocking(SPI_PORT, ack_packet, 4);
+    }
+
+    // Clear data ready signal
+    gpio_put(DATA_READY_PIN, 0);
+}
+
+void send_error_to_cpu(uint8_t command_id, uint8_t error_code) {
+    // Prepare error packet
+    uint8_t error_packet[4] = {
+        0xFE,        // Error command ID
+        4,           // Packet length
+        command_id,  // Original command with error
+        error_code   // Error code
+    };
+
+    // Similar pattern as acknowledgment sending
+    // Wait for CPU to be ready
+    while (gpio_get(CPU_CS_PIN) == 0) {
+        sleep_us(10);
+    }
+
+    gpio_put(DATA_READY_PIN, 1);
+
+    uint32_t timeout = 1000;
+    while (gpio_get(CPU_CS_PIN) == 1 && timeout > 0) {
+        sleep_us(1);
+        timeout--;
+    }
+
+    if (timeout > 0) {
+        spi_write_blocking(SPI_PORT, error_packet, 4);
+    }
+
+    gpio_put(DATA_READY_PIN, 0);
+}
+
+// APU Error Management
+
+// Error handling state
+volatile bool in_error_recovery = false;
+volatile ErrorCode current_error = ERR_NONE;
+volatile uint32_t last_error_time = 0;
+volatile uint32_t error_count = 0;
+
+void handle_error(ErrorCode code, uint8_t command_id) {
+    // Update error state
+    current_error = code;
+    last_error_time = time_ms_32();
+    error_count++;
+
+    // Log error locally
+    if (debug_enabled) {
+        printf("Error %d for command 0x%02X\n", code, command_id);
+    }
+
+    // Send error notification to CPU
+    send_error_to_cpu(command_id, code);
+
+    // For serious errors, enter recovery mode
+    if (code == ERR_MEMORY_FULL || code == ERR_SYNC_LOST ||
+        code == ERR_COMMUNICATION_FAILURE) {
+        in_error_recovery = true;
+
+        // Take error-specific recovery actions
+        switch (code) {
+            case ERR_MEMORY_FULL:
+                // Try to free resources
+                emergency_memory_cleanup();
+                break;
+
+            case ERR_SYNC_LOST:
+                // Prepare for resynchronization
+                reset_sync_state();
+                break;
+
+            case ERR_COMMUNICATION_FAILURE:
+                // Reset communication hardware
+                reset_spi_interface();
+                break;
+
+            default:
+                break;
+        }
+    }
+}
+
+void emergency_memory_cleanup() {
+    // For GPU:
+    #ifdef GPU_IMPLEMENTATION
+    // Free least-critical resources
+    flush_tile_cache(); // Clear entire tile cache
+    clear_sprites(); // Remove all sprites
+    reset_effects(); // Disable all effects
+    #endif
+
+    // For APU:
+    #ifdef APU_IMPLEMENTATION
+    // Free sound resources
+    stop_all_sounds();
+    clear_unused_samples();
+    reset_effects();
+    #endif
+
+    // Mark recovery complete
+    in_error_recovery = false;
+
+    if (debug_enabled) {
+        printf("Emergency memory cleanup complete\n");
+    }
+}
+
+void reset_sync_state() {
+    // Reset timing variables to prepare for new sync
+    synced_frame_counter = 0;
+    local_clock_offset = 0;
+
+    // Mark as ready for resyncing
+    in_error_recovery = false;
+
+    if (debug_enabled) {
+        printf("Reset sync state, waiting for master sync\n");
+    }
+}
+
+void reset_spi_interface() {
+    // Reinitialize SPI peripheral
+    spi_deinit(SPI_PORT);
+    sleep_ms(5);
+    spi_init(SPI_PORT, SPI_FREQUENCY);
+
+    // Reconfigure SPI pins
+    gpio_set_function(SPI_SCK_PIN, GPIO_FUNC_SPI);
+    gpio_set_function(SPI_MOSI_PIN, GPIO_FUNC_SPI);
+    gpio_set_function(SPI_MISO_PIN, GPIO_FUNC_SPI);
+
+    // Reset SPI state machine
+    in_error_recovery = false;
+
+    if (debug_enabled) {
+        printf("SPI interface reset complete\n");
+    }
+}
+
+// Process command queues with acknowledgment and retry handling
+void process_enhanced_queue(EnhancedCommandQueue* queue) {
+    // Max commands to process in one batch
+    const int MAX_BATCH = 10;
+    int processed = 0;
+
+    while (processed < MAX_BATCH) {
+        mutex_enter_blocking(&queue->lock);
+
+        // Check if queue is empty
+        if (queue->count == 0) {
+            mutex_exit(&queue->lock);
+            break;
+        }
+
+        // Get command from queue
+        EnhancedCommand* cmd = &queue->commands[queue->head];
+
+        // Check for retries of timed-out commands
+        if (cmd->requires_ack && !cmd->completed) {
+            uint32_t elapsed = time_ms_32() - cmd->timestamp;
+
+            if (elapsed > COMMAND_TIMEOUT_MS) {
+                // Command has timed out
+                if (cmd->retry_count < MAX_RETRIES) {
+                    // Retry the command
+                    cmd->retry_count++;
+                    cmd->timestamp = time_ms_32();
+
+                    // Prepare buffer for retrying
+                    uint8_t buffer[258];
+                    buffer[0] = cmd->command_id;
+                    buffer[1] = cmd->length;
+                    memcpy(&buffer[2], cmd->data, cmd->length - 2);
+
+                    mutex_exit(&queue->lock);
+
+                    // Log retry attempt
+                    if (debug_enabled) {
+                        printf("Retry %d for command 0x%02X\n", cmd->retry_count, cmd->command_id);
+                    }
+
+                    // Send command to appropriate device
+                    if (queue->device_id == 1) {
+                        gpio_put(GPU_CS_PIN, 0);
+                        spi_write_blocking(GPU_SPI_PORT, buffer, cmd->length);
+                        gpio_put(GPU_CS_PIN, 1);
+                    } else {
+                        gpio_put(APU_CS_PIN, 0);
+                        spi_write_blocking(APU_SPI_PORT, buffer, cmd->length);
+                        gpio_put(APU_CS_PIN, 1);
+                    }
+
+                    processed++;
+                    continue;
+                } else {
+                    // Max retries reached, mark as failed
+                    log_error("Command 0x%02X failed after %d retries",
+                             cmd->command_id, cmd->retry_count);
+
+                    // Move to next command
+                    queue->head = (queue->head + 1) % queue->capacity;
+                    queue->count--;
+
+                    if (cmd->requires_ack) {
+                        queue->pending_acks--;
+                    }
+
+                    mutex_exit(&queue->lock);
+                    continue;
+                }
+            }
+        }
+
+        // Only process completed or non-ack commands
+        if (cmd->completed || !cmd->requires_ack) {
+            // Prepare buffer for SPI transfer
+            uint8_t buffer[258];
+            buffer[0] = cmd->command_id;
+            buffer[1] = cmd->length;
+            memcpy(&buffer[2], cmd->data, cmd->length - 2);
+
+            // Move to next command
+            queue->head = (queue->head + 1) % queue->capacity;
+            queue->count--;
+
+            if (cmd->completed && cmd->requires_ack) {
+                queue->pending_acks--;
+            }
+
+            mutex_exit(&queue->lock);
+
+            // Send command to appropriate device
+            if (queue->device_id == 1) {
+                gpio_put(GPU_CS_PIN, 0);
+                spi_write_blocking(GPU_SPI_PORT, buffer, cmd->length);
+                gpio_put(GPU_CS_PIN, 1);
+            } else {
+                gpio_put(APU_CS_PIN, 0);
+                spi_write_blocking(APU_SPI_PORT, buffer, cmd->length);
+                gpio_put(APU_CS_PIN, 1);
+            }
+
+            processed++;
+        } else {
+            // Command requires acknowledgment but hasn't been completed yet
+            mutex_exit(&queue->lock);
+            break;
+        }
+    }
+}
+
+// Command Processing System
 void process_command(uint8_t cmd_id, const uint8_t* data, uint8_t length) {
     switch (cmd_id) {
         // System Commands
