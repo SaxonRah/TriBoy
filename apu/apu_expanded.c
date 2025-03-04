@@ -1366,8 +1366,28 @@ void apply_filter(uint8_t channel_id, float* buffer, uint32_t num_samples) {
     }
 }
 
-//Main Audio Processing and Output
+// Reverb Processing with Low-Pass Filtering
+void process_reverb(int16_t* buffer, uint32_t num_samples) {
+    for (uint32_t i = 0; i < num_samples; i++) {
+        int32_t input = buffer[i];
+        int32_t comb_output = (reverb_delay[i % REVERB_BUFFER_SIZE] * REVERB_FEEDBACK) >> 8;
+        int32_t filtered_output = (comb_output + reverb_lp * REVERB_LP_COEFF) >> 1;
+        reverb_lp = filtered_output;
+        reverb_delay[i % REVERB_BUFFER_SIZE] = input + filtered_output;
+        buffer[i] = (input + filtered_output) >> 1;
+    }
+}
 
+// Wavetable Morphing Implementation
+void generate_wavetable_sample(Waveform* wave, float phase, float morph) {
+    int index = (int)(phase * WAVE_TABLE_SIZE) % WAVE_TABLE_SIZE;
+    int next_index = (index + 1) % WAVE_TABLE_SIZE;
+    float blend = phase * WAVE_TABLE_SIZE - index;
+    wave->output = (wave->table1[index] * (1.0f - morph) + wave->table2[index] * morph) * (1.0f - blend) +
+                   (wave->table1[next_index] * (1.0f - morph) + wave->table2[next_index] * morph) * blend;
+}
+
+//Main Audio Processing and Output
 // Buffer for final audio output
 float mix_buffer[AUDIO_BUFFER_SIZE * 2];  // Stereo
 
