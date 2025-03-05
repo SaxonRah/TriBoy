@@ -1,10 +1,11 @@
 // apu.c
+#include <string.h>
 #include <stdio.h>
 #include "pico/stdlib.h"
 #include "pico/sync.h"
 #include "hardware/spi.h"
 #include "hardware/gpio.h"
-#include "triboy_common.h"
+#include "common.h"
 
 #ifndef tight_loop_contents
 #define tight_loop_contents() __asm volatile("nop \n")
@@ -13,7 +14,7 @@
 // Function prototypes
 void init_hardware();
 void process_command(uint8_t cmd_id, const uint8_t* data, uint8_t length);
-void send_ack_to_cpu(uint8_t command_id);
+void send_ack_to_cpu(uint8_t command_id, ErrorCode error_code);
 void play_sound(uint8_t channel, uint8_t sound_id, uint8_t volume);
 
 int main() {

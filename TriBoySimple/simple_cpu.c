@@ -1,10 +1,11 @@
 // cpu.c
+#include <string.h>
 #include <stdio.h>
 #include "pico/stdlib.h"
 #include "pico/multicore.h"
 #include "hardware/spi.h"
 #include "hardware/gpio.h"
-#include "triboy_common.h"
+#include "common.h"
 
 // Variables for VSYNC handling
 volatile bool vsync_received = false;
@@ -82,7 +83,7 @@ int main() {
 
 void init_hardware() {
     // Initialize SPI for GPU communication
-    spi_init(CPU_SPI_PORT, SPI_FREQUENCY);
+    spi_init(CPU_GPU_SPI_PORT, SPI_FREQUENCY);
     gpio_set_function(CPU_GPU_SCK_PIN, GPIO_FUNC_SPI);
     gpio_set_function(CPU_GPU_MOSI_PIN, GPIO_FUNC_SPI);
     gpio_set_function(CPU_GPU_MISO_PIN, GPIO_FUNC_SPI);
@@ -147,7 +148,7 @@ void send_command_to_gpu(uint8_t cmd_id, uint8_t length, const uint8_t* data) {
 
     // Send command to GPU
     gpio_put(GPU_CS_PIN, 0);
-    spi_write_blocking(CPU_SPI_PORT, cmd_buffer, length);
+    spi_write_blocking(CPU_GPU_SPI_PORT, cmd_buffer, length);
     gpio_put(GPU_CS_PIN, 1);
 }
 
