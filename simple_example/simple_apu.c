@@ -1,9 +1,14 @@
 // apu.c
 #include <stdio.h>
 #include "pico/stdlib.h"
+#include "pico/sync.h"
 #include "hardware/spi.h"
 #include "hardware/gpio.h"
 #include "triboy_common.h"
+
+#ifndef tight_loop_contents
+#define tight_loop_contents() __asm volatile("nop \n")
+#endif
 
 // Function prototypes
 void init_hardware();
@@ -29,9 +34,16 @@ int main() {
     while (true) {
         // Wait for CS to be asserted by CPU
         if (!gpio_get(APU_CS_PIN)) {
-            // Read command ID and length
-            spi_read_blocking(APU_SPI_PORT, 0xFF, &cmd_id, 1);
-            spi_read_blocking(APU_SPI_PORT, 0xFF, &length, 1);
+
+            // Create a buffer for the entire command
+            uint8_t cmd_buffer[256];
+
+            // Read first two bytes (guaranteed minimum size)
+            spi_read_blocking(APU_SPI_PORT, 0xFF, cmd_buffer, 2);
+
+            // Extract command ID and length
+            cmd_id = cmd_buffer[0];
+            length = cmd_buffer[1];
 
             // Read any additional data
             if (length > 2) {
@@ -44,6 +56,11 @@ int main() {
             }
 
             printf("APU: Received command 0x%02X with length %d\n", cmd_id, length);
+
+            // Copy data to data_buffer for processing
+            if (length > 2) {
+                memcpy(data_buffer, &cmd_buffer[2], length - 2);
+            }
 
             // Process the command
             process_command(cmd_id, data_buffer, length - 2);
@@ -83,13 +100,13 @@ void process_command(uint8_t cmd_id, const uint8_t* data, uint8_t length) {
         case CMD_NOP:
             printf("APU: Processing NOP command\n");
             // Even for NOP, send an acknowledgment
-            send_ack_to_cpu(CMD_NOP);
+            send_ack_to_cpu(CMD_NOP, ERR_NONE);
             break;
 
         case CMD_RESET_AUDIO:
             printf("APU: Processing RESET command\n");
             // In a real implementation, we would reset APU state here
-            send_ack_to_cpu(CMD_RESET_AUDIO);
+            send_ack_to_cpu(CMD_RESET_AUDIO, ERR_NONE);
             break;
 
         case CMD_PLAY_SOUND:
@@ -98,22 +115,23 @@ void process_command(uint8_t cmd_id, const uint8_t* data, uint8_t length) {
             if (length >= 2) {
                 play_sound(data[0], data[1], 255); // Full volume
             }
-            send_ack_to_cpu(CMD_PLAY_SOUND);
+            send_ack_to_cpu(CMD_PLAY_SOUND, ERR_NONE);
             break;
 
         default:
             printf("APU: Unknown command 0x%02X\n", cmd_id);
+            send_ack_to_cpu(cmd_id, ERR_INVALID_COMMAND);
             break;
     }
 }
 
-void send_ack_to_cpu(uint8_t command_id) {
+void send_ack_to_cpu(uint8_t command_id, ErrorCode error_code) {
     // Prepare acknowledgment packet
     uint8_t ack_packet[4] = {
         CMD_ACK,      // ACK command ID
         4,            // Packet length
         command_id,   // Original command being acknowledged
-        0             // Status (0 = success)
+        error_code    // Status (0 = success, others = error codes)
     };
 
     // Wait for CS to be inactive (high)

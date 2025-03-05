@@ -2,9 +2,15 @@
 #include <stdio.h>
 #include "pico/stdlib.h"
 #include "pico/multicore.h"
+#include "pico/sync.h"
+
 #include "hardware/spi.h"
 #include "hardware/gpio.h"
 #include "triboy_common.h"
+
+#ifndef tight_loop_contents
+#define tight_loop_contents() __asm volatile("nop \n")
+#endif
 
 // Function prototypes
 void init_hardware();
@@ -16,6 +22,7 @@ void core1_vsync_simulator();
 // Global state variables
 bool vblank_callback_enabled = false;
 volatile bool should_exit = false;
+bool spi_vsync_notification_enabled = false;
 
 int main() {
     // Initialize stdio for print statements
@@ -38,21 +45,32 @@ int main() {
     while (!should_exit) {
         // Wait for CS to be asserted by CPU
         if (!gpio_get(GPU_CS_PIN)) {
-            // Read command ID and length
-            spi_read_blocking(GPU_SPI_PORT, 0xFF, &cmd_id, 1);
-            spi_read_blocking(GPU_SPI_PORT, 0xFF, &length, 1);
+            // Create a buffer for the entire command
+            uint8_t cmd_buffer[256];
 
-            // Read any additional data
+            // Read first two bytes (guaranteed minimum size)
+            spi_read_blocking(GPU_SPI_PORT, 0xFF, cmd_buffer, 2);
+
+            // Extract command ID and length
+            cmd_id = cmd_buffer[0];
+            length = cmd_buffer[1];
+
+            // Read any additional data if needed
             if (length > 2) {
-                spi_read_blocking(GPU_SPI_PORT, 0xFF, data_buffer, length - 2);
+                spi_read_blocking(GPU_SPI_PORT, 0xFF, &cmd_buffer[2], length - 2);
             }
 
             // Process command after CS is deasserted
             while (!gpio_get(GPU_CS_PIN)) {
-                tight_loop_contents(); // Wait for CS to be deasserted
+                tight_loop_contents();
             }
 
             printf("GPU: Received command 0x%02X with length %d\n", cmd_id, length);
+
+            // Copy data to data_buffer for processing
+            if (length > 2) {
+                memcpy(data_buffer, &cmd_buffer[2], length - 2);
+            }
 
             // Process the command
             process_command(cmd_id, data_buffer, length - 2);
@@ -97,42 +115,53 @@ void process_command(uint8_t cmd_id, const uint8_t* data, uint8_t length) {
         case CMD_NOP:
             printf("GPU: Processing NOP command\n");
             // Even for NOP, send an acknowledgment
-            send_ack_to_cpu(CMD_NOP);
+            send_ack_to_cpu(CMD_NOP, ERR_NONE);
             break;
 
         case CMD_RESET_GPU:
             printf("GPU: Processing RESET command\n");
             // In a real implementation, we would reset GPU state here
-            send_ack_to_cpu(CMD_RESET_GPU);
+            send_ack_to_cpu(CMD_RESET_GPU, ERR_NONE);
+            break;
+
+        case CMD_ENABLE_SPI_VSYNC:
+            spi_vsync_notification_enabled = true;
+            send_ack_to_cpu(CMD_ENABLE_SPI_VSYNC, ERR_NONE);
+            break;
+
+        case CMD_DISABLE_SPI_VSYNC:
+            spi_vsync_notification_enabled = false;
+            send_ack_to_cpu(CMD_DISABLE_SPI_VSYNC, ERR_NONE);
             break;
 
         case CMD_SET_VSYNC_CALLBACK:
             printf("GPU: Processing SET_VSYNC_CALLBACK command\n");
             // Enable/disable VSYNC callback
             vblank_callback_enabled = (data[0] != 0);
-            send_ack_to_cpu(CMD_SET_VSYNC_CALLBACK);
+            send_ack_to_cpu(CMD_SET_VSYNC_CALLBACK, ERR_NONE);
             break;
 
         case CMD_VSYNC_WAIT:
             printf("GPU: Processing VSYNC_WAIT command\n");
             // In a real implementation, the response would be sent at next VSYNC
             // For this example, we'll just acknowledge now
-            send_ack_to_cpu(CMD_VSYNC_WAIT);
+            send_ack_to_cpu(CMD_VSYNC_WAIT, ERR_NONE);
             break;
 
         default:
             printf("GPU: Unknown command 0x%02X\n", cmd_id);
+            send_ack_to_cpu(cmd_id, ERR_INVALID_COMMAND);
             break;
     }
 }
 
-void send_ack_to_cpu(uint8_t command_id) {
+void send_ack_to_cpu(uint8_t command_id, ErrorCode error_code) {
     // Prepare acknowledgment packet
     uint8_t ack_packet[4] = {
         CMD_ACK,      // ACK command ID
         4,            // Packet length
         command_id,   // Original command being acknowledged
-        0             // Status (0 = success)
+        error_code    // Status (0 = success, others = error codes)
     };
 
     // Wait for CS to be inactive (high)
@@ -171,12 +200,47 @@ void send_vsync_to_cpu() {
         return;
     }
 
-    // Using GPIO interrupt instead of SPI for VSYNC
+    // Method 1: GPIO interrupt (primary method)
     gpio_put(GPU_VSYNC_PIN, 0);  // Active low
     sleep_us(10);                 // Short pulse
     gpio_put(GPU_VSYNC_PIN, 1);   // Back to inactive
 
-    printf("GPU: Sent VSYNC pulse to CPU\n");
+    // Method 2: SPI notification (backup, if enabled)
+    if (spi_vsync_notification_enabled) {
+        // Prepare VSYNC packet
+        uint8_t vsync_packet[4] = {
+            CMD_VSYNC,    // VSYNC command ID
+            4,            // Packet length
+            0,            // No command reference
+            ERR_NONE      // No status
+        };
+
+        // Signal CPU that we have data
+        gpio_put(GPU_DATA_READY_PIN, 1);
+
+        // Wait for CPU to assert CS (begin reading) with timeout
+        uint32_t timeout = 10000; // 10ms timeout
+        while (gpio_get(GPU_CS_PIN) && timeout > 0) {
+            sleep_us(1);
+            timeout--;
+        }
+
+        // If CS was asserted, send the VSYNC notification
+        if (timeout > 0) {
+            spi_write_blocking(GPU_SPI_PORT, vsync_packet, 4);
+        }
+
+        // Wait for CS to be deasserted
+        while (!gpio_get(GPU_CS_PIN) && timeout > 0) {
+            sleep_us(1);
+            timeout--;
+        }
+
+        // Lower DATA_READY signal
+        gpio_put(GPU_DATA_READY_PIN, 0);
+    }
+
+    printf("GPU: Sent VSYNC notification to CPU\n");
 }
 
 // VSYNC simulation running on Core 1

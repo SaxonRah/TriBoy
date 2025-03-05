@@ -8,9 +8,16 @@
 
 // SPI configuration
 #define SPI_FREQUENCY 8000000  // 8MHz
-#define CPU_SPI_PORT spi0
-#define GPU_SPI_PORT spi0
-#define APU_SPI_PORT spi1
+// SPI0 bus is shared between CPU and GPU
+#define SPI0_BUS spi0
+// SPI1 bus is used for CPU to APU communication
+#define SPI1_BUS spi1
+
+// Device-specific ports (for clarity)
+#define CPU_GPU_SPI_PORT SPI0_BUS
+#define GPU_SPI_PORT SPI0_BUS
+#define CPU_APU_SPI_PORT SPI1_BUS
+#define APU_SPI_PORT SPI1_BUS
 
 // PIN definitions
 // SPI0 for CPU to GPU communication
@@ -34,15 +41,20 @@
 #define CMD_RESET_AUDIO 0x01
 #define CMD_SET_VSYNC_CALLBACK 0x03
 #define CMD_VSYNC_WAIT 0x04
+#define CMD_ENABLE_SPI_VSYNC 0x05
+#define CMD_DISABLE_SPI_VSYNC 0x06
 #define CMD_PLAY_SOUND 0x71
 #define CMD_ACK 0xFA
 #define CMD_VSYNC 0xFB
+
 
 // Error codes
 typedef enum {
     ERR_NONE = 0,
     ERR_TIMEOUT = 1,
-    ERR_INVALID_COMMAND = 2
+    ERR_INVALID_COMMAND = 2,
+    ERR_INVALID_PARAMS = 3,
+    ERR_BUSY = 4
 } ErrorCode;
 
 #endif // TRIBOY_COMMON_H

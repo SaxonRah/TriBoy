@@ -128,15 +128,27 @@ void send_command_to_gpu(uint8_t cmd_id, uint8_t length, const uint8_t* data) {
     cmd_buffer[0] = cmd_id;   // Command ID
     cmd_buffer[1] = length;   // Command length (including ID and length bytes)
 
+    // Check if GPU is ready (CS should be deasserted, DATA_READY should be low)
+    uint32_t timeout = 1000; // 1ms timeout
+    while ((gpio_get(GPU_DATA_READY_PIN) || !gpio_get(GPU_CS_PIN)) && timeout > 0) {
+        sleep_us(1);
+        timeout--;
+    }
+
+    if (timeout == 0) {
+        printf("CPU: Timeout waiting for GPU to be ready\n");
+        return; // Skip this command
+    }
+
     // Copy command data if any
     if (length > 2 && data != NULL) {
         memcpy(&cmd_buffer[2], data, length - 2);
     }
 
     // Send command to GPU
-    gpio_put(GPU_CS_PIN, 0); // Select GPU
+    gpio_put(GPU_CS_PIN, 0);
     spi_write_blocking(CPU_SPI_PORT, cmd_buffer, length);
-    gpio_put(GPU_CS_PIN, 1); // Deselect GPU
+    gpio_put(GPU_CS_PIN, 1);
 }
 
 void send_command_to_apu(uint8_t cmd_id, uint8_t length, const uint8_t* data) {
@@ -145,6 +157,18 @@ void send_command_to_apu(uint8_t cmd_id, uint8_t length, const uint8_t* data) {
     // Prepare command data
     cmd_buffer[0] = cmd_id;   // Command ID
     cmd_buffer[1] = length;   // Command length (including ID and length bytes)
+
+    // Check if APU is ready (CS should be deasserted, DATA_READY should be low)
+    uint32_t timeout = 1000; // 1ms timeout
+    while ((gpio_get(APU_DATA_READY_PIN) || !gpio_get(APU_CS_PIN)) && timeout > 0) {
+        sleep_us(1);
+        timeout--;
+    }
+
+    if (timeout == 0) {
+        printf("CPU: Timeout waiting for APU to be ready\n");
+        return; // Skip this command
+    }
 
     // Copy command data if any
     if (length > 2 && data != NULL) {
@@ -162,8 +186,19 @@ void process_gpu_response() {
 
     // Read response from GPU
     gpio_put(GPU_CS_PIN, 0); // Select GPU
-    spi_read_blocking(CPU_SPI_PORT, 0xFF, response, 4); // Send dummy byte to receive data
+    spi_read_blocking(GPU_SPI_PORT, 0xFF, response, 4);
     gpio_put(GPU_CS_PIN, 1); // Deselect GPU
+
+    // Wait for DATA_READY to go low (acknowledgment of processing)
+    uint32_t timeout = 5000; // 5ms timeout
+    while (gpio_get(GPU_DATA_READY_PIN) && timeout > 0) {
+        sleep_us(1);
+        timeout--;
+    }
+
+    if (timeout == 0) {
+        printf("CPU: Timeout waiting for GPU DATA_READY to go low\n");
+    }
 
     // Process response based on type
     if (response[0] == CMD_ACK) {
@@ -183,6 +218,17 @@ void process_apu_response() {
     gpio_put(APU_CS_PIN, 0); // Select APU
     spi_read_blocking(APU_SPI_PORT, 0xFF, response, 4); // Send dummy byte to receive data
     gpio_put(APU_CS_PIN, 1); // Deselect APU
+
+    // Wait for DATA_READY to go low (acknowledgment of processing)
+    uint32_t timeout = 5000; // 5ms timeout
+    while (gpio_get(APU_DATA_READY_PIN) && timeout > 0) {
+        sleep_us(1);
+        timeout--;
+    }
+
+    if (timeout == 0) {
+        printf("CPU: Timeout waiting for APU DATA_READY to go low\n");
+    }
 
     // Process response based on type
     if (response[0] == CMD_ACK) {
