@@ -16,10 +16,16 @@ Design Documents:
 - `APU_Implementation.md` goes over the APU design's implementation details.
 - `ExternalCartridgeSupport.md` goes over potential external cartridge support.
 - `PracticalLimitations.md` goes over SPI bandwidth, frame timing, and command throughput.
+- `TMA_TCOM_Protocol.md` goes over the unique TCOM protocol of the TriBoy system.
   
 Root:
 - `README.md` goes over the concept of the TriBoy and TMA at a high-level.
-- `apu.c`, `cpu.c`, `gpu.c` are almost complete implementations of each microcontroller. (none compiled)
+- `triboy_commands.h`, `apu.c`, `cpu.c`, `gpu.c` are almost complete implementations of each microcontroller. (none compiled)
+
+TriBoy Simple:
+- `common.h`, `simple_apu.c`, `simple_cpu.c`, `simple_gpu.c` are simple implementations of each microcontroller. (compiled, but not tested.)
+  - Uses VSCode - Pico (the official VS Code extension for Raspberry Pi Pico development).
+  - Has custom debugging launchers in launch.json for the offical Raspberry Pi Debug Probe SWD/UART accessory.
 
 ## Architecture Overview
 TriBoy employs a Three Microcontroller Architecture (TMA) where each microcontroller handles specific tasks:
