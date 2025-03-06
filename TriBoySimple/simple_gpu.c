@@ -7,7 +7,9 @@
 
 #include "hardware/spi.h"
 #include "hardware/gpio.h"
+
 #include "common.h"
+#include "lcd_display.h"
 
 #ifndef tight_loop_contents
 #define tight_loop_contents() __asm volatile("nop \n")
@@ -107,6 +109,14 @@ void init_hardware() {
     gpio_init(GPU_VSYNC_PIN);
     gpio_set_dir(GPU_VSYNC_PIN, GPIO_OUT);
     gpio_put(GPU_VSYNC_PIN, 1);
+
+    // Initialize LCD display
+    lcd_init(i2c0, GPU_DBG_SDA_PIN, GPU_DBG_SCL_PIN);
+    lcd_clear();
+    lcd_set_cursor(0, 0);
+    lcd_string("GPU Ready");
+    lcd_set_cursor(1, 0);
+    lcd_string("Waiting for CMD");
 
     printf("GPU hardware initialized\n");
 }

@@ -21,19 +21,33 @@
 
 // PIN definitions
 // SPI0 for CPU to GPU communication
-#define CPU_GPU_SCK_PIN 2
-#define CPU_GPU_MOSI_PIN 3
-#define CPU_GPU_MISO_PIN 4
-#define GPU_CS_PIN 5
-#define GPU_DATA_READY_PIN 6
-#define GPU_VSYNC_PIN 7
+#define CPU_GPU_SCK_PIN 4
+#define CPU_GPU_MOSI_PIN 5 // TX
+#define CPU_GPU_MISO_PIN 6 // RX
+#define GPU_CS_PIN 7
+#define GPU_DATA_READY_PIN 9
+#define GPU_VSYNC_PIN 10
 
 // SPI1 for CPU to APU communication
-#define CPU_APU_SCK_PIN 10
-#define CPU_APU_MOSI_PIN 11
-#define CPU_APU_MISO_PIN 12
-#define APU_CS_PIN 13
-#define APU_DATA_READY_PIN 14
+#define CPU_APU_SCK_PIN 14
+#define CPU_APU_MOSI_PIN 15 // TX
+#define CPU_APU_MISO_PIN 16 // RX
+#define APU_CS_PIN 17
+#define APU_DATA_READY_PIN 19
+
+// I2C Debug Screens: These I2C screens connect directly to each sub-Pico Module (e.g. CPU, GPU, APU each have a 16x2 Character Screen)
+// #define CPU_DBG_VBUS_PIN 40
+// #define CPU_DBG_GND_PIN 38
+// #define GPU_DBG_VBUS_PIN 40
+// #define GPU_DBG_GND_PIN 38
+// #define APU_DBG_VBUS_PIN 40
+// #define APU_DBG_GND_PIN 38
+#define CPU_DBG_SCL_PIN 32
+#define CPU_DBG_SDA_PIN 31
+#define GPU_DBG_SCL_PIN 32
+#define GPU_DBG_SDA_PIN 31
+#define CPU_DBG_SCL_PIN 32
+#define CPU_DBG_SDA_PIN 31
 
 // Command IDs
 #define CMD_NOP 0x00

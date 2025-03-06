@@ -34,6 +34,16 @@ pico_sdk_init()
 # Add common include directories
 include_directories(${CMAKE_CURRENT_LIST_DIR})
 
+# Add debug screen library
+add_library(lcd_display STATIC
+    lcd_display.c
+)
+
+target_link_libraries(lcd_display
+    pico_stdlib
+    hardware_i2c
+)
+
 # Define the three executables
 add_executable(TriBoySimpleCPU simple_cpu.c)
 add_executable(TriBoySimpleAPU simple_apu.c)
@@ -65,6 +75,7 @@ foreach(TARGET TriBoySimpleCPU TriBoySimpleAPU TriBoySimpleGPU)
         hardware_timer
         hardware_watchdog
         hardware_clocks
+        lcd_display
     )
 
     # Generate additional output files (.uf2, etc.)
@@ -74,3 +85,4 @@ endforeach()
 # Add multicore library to CPU and GPU which use it
 target_link_libraries(TriBoySimpleCPU pico_multicore)
 target_link_libraries(TriBoySimpleGPU pico_multicore)
+target_link_libraries(TriBoySimpleAPU pico_multicore)

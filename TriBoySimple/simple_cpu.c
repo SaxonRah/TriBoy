@@ -1,4 +1,7 @@
 // cpu.c
+//#define SYS_CLK_MHZ 200
+#define PICO_USE_FASTEST_SUPPORTED_CLOCK 1
+
 #include <string.h>
 #include <stdio.h>
 #include "pico/stdlib.h"
