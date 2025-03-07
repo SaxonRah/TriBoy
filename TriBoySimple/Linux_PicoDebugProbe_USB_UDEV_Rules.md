@@ -106,6 +106,7 @@ My Pico DebugProbe is:
 ```
 SUBSYSTEM=="tty", ATTRS{idVendor}=="2e8a", ATTRS{idProduct}=="000c", MODE="0666", GROUP="dialout"
 ```
+CTRL-O to save rule. Hit Enter to confirm file name. CTRL-X to exit Nano.
 
 After adding the udev rule, reload with:
 ```bash
