@@ -49,6 +49,9 @@ add_executable(TriBoySimpleCPU simple_cpu.c)
 add_executable(TriBoySimpleAPU simple_apu.c)
 add_executable(TriBoySimpleGPU simple_gpu.c)
 
+# Add I2C Scanner executable
+add_executable(i2c_scanner i2c_scanner.c)
+
 # Set program properties for each executable
 foreach(TARGET TriBoySimpleCPU TriBoySimpleAPU TriBoySimpleGPU)
     pico_set_program_name(${TARGET} ${TARGET})
@@ -81,6 +84,17 @@ foreach(TARGET TriBoySimpleCPU TriBoySimpleAPU TriBoySimpleGPU)
     # Generate additional output files (.uf2, etc.)
     pico_add_extra_outputs(${TARGET})
 endforeach()
+
+# Configure I2C scanner executable
+pico_set_program_name(i2c_scanner "I2C Scanner")
+pico_set_program_version(i2c_scanner "0.1")
+pico_enable_stdio_uart(i2c_scanner 1)
+pico_enable_stdio_usb(i2c_scanner 1)
+target_link_libraries(i2c_scanner
+    pico_stdlib
+    hardware_i2c
+)
+pico_add_extra_outputs(i2c_scanner)
 
 # Add multicore library to CPU and GPU which use it
 target_link_libraries(TriBoySimpleCPU pico_multicore)
