@@ -38,3 +38,23 @@ sudo usermod -a -G plugdev $USER
 
 Note: If you're using a specific debug probe not listed above, you may need to find its vendor and product IDs.
 You can do this by running `lsusb` with the device connected, which will show a line like `Bus 001 Device 005: ID 2e8a:0003 Raspberry Pi Pico`.
+
+7. Add your user to dialout Group
+```bash
+sudo usermod -a -G dialout $USER
+```
+7. Change the permissions on your serial device for Serial Monitor
+
+```bash
+sudo chmod 766 /dev/ttyACM0
+```
+7: File Owner (Root): read write, and execute
+6: Group: read and write
+6: Others: read and write
+
+766 is insecure, so use 664 instead.
+
+```bash
+sudo chmod 660 /dev/ttyACM0
+sudo chown root:dialout /dev/ttyACM0
+```
