@@ -111,7 +111,7 @@ void init_hardware() {
     gpio_put(GPU_VSYNC_PIN, 1);
 
     // Initialize LCD display
-    lcd_init(i2c0, GPU_DBG_SDA_PIN, GPU_DBG_SCL_PIN);
+    lcd_init(GPU_DBG_I2C, GPU_DBG_SDA_PIN, GPU_DBG_SCL_PIN);
     lcd_clear();
     lcd_set_cursor(0, 0);
     lcd_string("GPU Ready");

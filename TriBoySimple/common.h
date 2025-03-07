@@ -13,6 +13,10 @@
 // SPI1 bus is used for CPU to APU communication
 #define SPI1_BUS spi1
 
+#define CPU_DBG_I2C i2c1
+#define GPU_DBG_I2C i2c1
+#define APU_DBG_I2C i2c1
+
 // Device-specific ports (for clarity)
 #define CPU_GPU_SPI_PORT SPI0_BUS
 #define GPU_SPI_PORT SPI0_BUS
@@ -44,10 +48,10 @@
 // #define APU_DBG_GND_PIN 38
 #define CPU_DBG_SCL_PIN 32
 #define CPU_DBG_SDA_PIN 31
-#define GPU_DBG_SCL_PIN 32
-#define GPU_DBG_SDA_PIN 31
-#define CPU_DBG_SCL_PIN 32
-#define CPU_DBG_SDA_PIN 31
+#define GPU_DBG_SCL_PIN 25
+#define GPU_DBG_SDA_PIN 24
+#define APU_DBG_SCL_PIN 32
+#define APU_DBG_SDA_PIN 31
 
 // Command IDs
 #define CMD_NOP 0x00
