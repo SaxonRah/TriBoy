@@ -86,9 +86,9 @@
                 "monitor reset init",
                 // For some reason ${workspaceRoot} isn't including escapses in \ slashes (e.g. \\) on Windows
                 // Use "load \"${workspaceRoot}/build/TriBoySimpleCPU.elf\"" on Linux
-                // "load \"${workspaceRoot}/build/TriBoySimpleCPU.elf\""
+                "load \"${workspaceRoot}/build/TriBoySimpleCPU.elf\""
                 // If on Windows replace this file location with your file location and use this line and not the ${workspaceRoot} line.
-                "load \"C:/Users/Jupiter/Documents/GitHub/TriBoy/TriBoySimple/build/TriBoySimpleCPU.elf\""
+                // "load \"C:/Users/Jupiter/Documents/GitHub/TriBoy/TriBoySimple/build/TriBoySimpleCPU.elf\""
             ],
             "openOCDLaunchCommands": [
                 "adapter speed 5000"
@@ -114,9 +114,9 @@
                 "monitor reset init",
                 // For some reason ${workspaceRoot} isn't including escapses in \ slashes (e.g. \\) on Windows
                 // Use "load \"${workspaceRoot}/build/TriBoySimpleGPU.elf\"" on Linux
-                // "load \"${workspaceRoot}/build/TriBoySimpleGPU.elf\""
+                "load \"${workspaceRoot}/build/TriBoySimpleGPU.elf\""
                 // If on Windows replace this file location with your file location and use this line and not the ${workspaceRoot} line.
-                "load \"C:/Users/Jupiter/Documents/GitHub/TriBoy/TriBoySimple/build/TriBoySimpleGPU.elf\""
+                // "load \"C:/Users/Jupiter/Documents/GitHub/TriBoy/TriBoySimple/build/TriBoySimpleGPU.elf\""
             ],
             "openOCDLaunchCommands": [
                 "adapter speed 5000"
@@ -142,9 +142,9 @@
                 "monitor reset init",
                 // For some reason ${workspaceRoot} isn't including escapses in \ slashes (e.g. \\) on Windows
                 // Use "load \"${workspaceRoot}/build/TriBoySimpleAPU.elf\"" on Linux
-                // "load \"${workspaceRoot}/build/TriBoySimpleAPU.elf\""
+                "load \"${workspaceRoot}/build/TriBoySimpleAPU.elf\""
                 // If on Windows replace this file location with your file location and use this line and not the ${workspaceRoot} line.
-                "load \"C:/Users/Jupiter/Documents/GitHub/TriBoy/TriBoySimple/build/TriBoySimpleAPU.elf\""
+                // "load \"C:/Users/Jupiter/Documents/GitHub/TriBoy/TriBoySimple/build/TriBoySimpleAPU.elf\""
             ],
             "openOCDLaunchCommands": [
                 "adapter speed 5000"

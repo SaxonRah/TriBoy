@@ -1,6 +1,9 @@
 #include <stdio.h>
+#include <stdint.h>
 #include "pico/stdlib.h"
 #include "hardware/i2c.h"
+
+// Connect the SDA and SCL pins to 6 and 7 on the Pico
 
 int main() {
     // Initialize USB serial
