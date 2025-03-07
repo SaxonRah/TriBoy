@@ -93,6 +93,7 @@ pico_enable_stdio_usb(i2c_scanner 1)
 target_link_libraries(i2c_scanner
     pico_stdlib
     hardware_i2c
+    hardware_spi
 )
 pico_add_extra_outputs(i2c_scanner)
 

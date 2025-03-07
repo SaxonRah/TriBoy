@@ -14,7 +14,7 @@
 #define SPI1_BUS spi1
 
 #define CPU_DBG_I2C i2c1
-#define GPU_DBG_I2C i2c1
+#define GPU_DBG_I2C i2c0
 #define APU_DBG_I2C i2c1
 
 // Device-specific ports (for clarity)
@@ -48,8 +48,10 @@
 // #define APU_DBG_GND_PIN 38
 #define CPU_DBG_SCL_PIN 32
 #define CPU_DBG_SDA_PIN 31
-#define GPU_DBG_SCL_PIN 25
-#define GPU_DBG_SDA_PIN 24
+// #define GPU_DBG_SCL_PIN 25
+// #define GPU_DBG_SDA_PIN 24
+#define GPU_DBG_SCL_PIN PICO_DEFAULT_I2C_SCL_PIN
+#define GPU_DBG_SDA_PIN PICO_DEFAULT_I2C_SDA_PIN
 #define APU_DBG_SCL_PIN 32
 #define APU_DBG_SDA_PIN 31
 
