@@ -11,6 +11,8 @@
 #define tight_loop_contents() __asm volatile("nop \n")
 #endif
 
+#define DBG_ADDR 0x3D
+
 // Function prototypes
 void init_hardware();
 void process_command(uint8_t cmd_id, const uint8_t* data, uint8_t length);

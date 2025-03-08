@@ -13,9 +13,9 @@
 // SPI1 bus is used for CPU to APU communication
 #define SPI1_BUS spi1
 
-#define CPU_DBG_I2C i2c1
+#define CPU_DBG_I2C i2c0
 #define GPU_DBG_I2C i2c0
-#define APU_DBG_I2C i2c1
+#define APU_DBG_I2C i2c0
 
 // Device-specific ports (for clarity)
 #define CPU_GPU_SPI_PORT SPI0_BUS
@@ -40,20 +40,21 @@
 #define APU_DATA_READY_PIN 19
 
 // I2C Debug Screens: These I2C screens connect directly to each sub-Pico Module (e.g. CPU, GPU, APU each have a 16x2 Character Screen)
+// THESE SHOULD BE GPIO NUMBERS NOT PHYSICAL PIN NUMBERS
 // #define CPU_DBG_VBUS_PIN 40
 // #define CPU_DBG_GND_PIN 38
 // #define GPU_DBG_VBUS_PIN 40
 // #define GPU_DBG_GND_PIN 38
 // #define APU_DBG_VBUS_PIN 40
 // #define APU_DBG_GND_PIN 38
-#define CPU_DBG_SCL_PIN 32
-#define CPU_DBG_SDA_PIN 31
-// #define GPU_DBG_SCL_PIN 25
-// #define GPU_DBG_SDA_PIN 24
-#define GPU_DBG_SCL_PIN PICO_DEFAULT_I2C_SCL_PIN
-#define GPU_DBG_SDA_PIN PICO_DEFAULT_I2C_SDA_PIN
-#define APU_DBG_SCL_PIN 32
-#define APU_DBG_SDA_PIN 31
+#define CPU_DBG_SCL_PIN 21
+#define CPU_DBG_SDA_PIN 20
+#define GPU_DBG_SCL_PIN 21 // i2c0
+#define GPU_DBG_SDA_PIN 20 // i2c0
+// #define GPU_DBG_SCL_PIN PICO_DEFAULT_I2C_SCL_PIN
+// #define GPU_DBG_SDA_PIN PICO_DEFAULT_I2C_SDA_PIN
+#define APU_DBG_SCL_PIN 21
+#define APU_DBG_SDA_PIN 20
 
 // Command IDs
 #define CMD_NOP 0x00

@@ -10,6 +10,8 @@
 #include "hardware/gpio.h"
 #include "common.h"
 
+#define DBG_ADDR 0x27
+
 // Variables for VSYNC handling
 volatile bool vsync_received = false;
 bool vsync_callback_enabled = false;

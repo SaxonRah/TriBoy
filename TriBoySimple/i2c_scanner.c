@@ -12,7 +12,9 @@ int main() {
     stdio_init_all();
     
     // Configure I2C1 at 100 kHz
-    i2c_init(GPU_DBG_I2C, 100 * 1000);
+    i2c_init(CPU_DBG_I2C, 100 * 1000);
+    // i2c_init(GPU_DBG_I2C, 100 * 1000);
+    // i2c_init(APU_DBG_I2C, 100 * 1000);
 
     // Configure I2C0 at 100 kHz
     // i2c_init(i2c0, 100 * 1000);
@@ -22,14 +24,22 @@ int main() {
     //
     // gpio_set_function(PICO_DEFAULT_I2C_SDA_PIN, GPIO_FUNC_I2C);
     // gpio_set_function(PICO_DEFAULT_I2C_SCL_PIN, GPIO_FUNC_I2C);
-    gpio_set_function(GPU_DBG_SDA_PIN, GPIO_FUNC_I2C);
-    gpio_set_function(GPU_DBG_SCL_PIN, GPIO_FUNC_I2C);
+    gpio_set_function(CPU_DBG_SDA_PIN, GPIO_FUNC_I2C);
+    gpio_set_function(CPU_DBG_SCL_PIN, GPIO_FUNC_I2C);
+    // gpio_set_function(GPU_DBG_SDA_PIN, GPIO_FUNC_I2C);
+    // gpio_set_function(GPU_DBG_SCL_PIN, GPIO_FUNC_I2C);
+    // gpio_set_function(APU_DBG_SDA_PIN, GPIO_FUNC_I2C);
+    // gpio_set_function(APU_DBG_SCL_PIN, GPIO_FUNC_I2C);
     
     // Enable internal pullups
     // gpio_pull_up(PICO_DEFAULT_I2C_SDA_PIN);
     // gpio_pull_up(PICO_DEFAULT_I2C_SCL_PIN);
-    gpio_pull_up(GPU_DBG_SDA_PIN);
-    gpio_pull_up(GPU_DBG_SCL_PIN);
+    gpio_pull_up(CPU_DBG_SDA_PIN);
+    gpio_pull_up(CPU_DBG_SCL_PIN);
+    // gpio_pull_up(GPU_DBG_SDA_PIN);
+    // gpio_pull_up(GPU_DBG_SCL_PIN);
+    // gpio_pull_up(APU_DBG_SDA_PIN);
+    // gpio_pull_up(APU_DBG_SCL_PIN);
     
     // Wait for serial connection
     sleep_ms(2000);
