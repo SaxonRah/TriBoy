@@ -81,14 +81,13 @@ int main() {
 }
 
 void init_hardware() {
-    // Initialize SPI in slave mode
+    // Initialize SPI for APU communication
     spi_init(APU_SPI_PORT, SPI_FREQUENCY);
-
     // Configure SPI pins
     gpio_set_function(CPU_APU_SCK_PIN, GPIO_FUNC_SPI);
-    gpio_set_function(CPU_APU_MOSI_PIN, GPIO_FUNC_SPI);
-    gpio_set_function(CPU_APU_MISO_PIN, GPIO_FUNC_SPI);
-
+    gpio_set_function(APU_RX_PIN, GPIO_FUNC_SPI);  // Changed from CPU_APU_MOSI_PIN
+    gpio_set_function(APU_TX_PIN, GPIO_FUNC_SPI);  // Changed from CPU_APU_MISO_PIN
+    
     // Configure CS pin (active low, input from CPU)
     gpio_init(APU_CS_PIN);
     gpio_set_dir(APU_CS_PIN, GPIO_IN);

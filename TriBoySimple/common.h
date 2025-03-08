@@ -26,16 +26,20 @@
 // PIN definitions
 // SPI0 for CPU to GPU communication
 #define CPU_GPU_SCK_PIN 4
-#define CPU_GPU_MOSI_PIN 5 // TX
-#define CPU_GPU_MISO_PIN 6 // RX
+#define CPU_TX_PIN 5      // CPU output to GPU
+#define CPU_RX_PIN 6      // CPU input from GPU
+#define GPU_RX_PIN 6      // GPU input from CPU (connects to CPU_TX_PIN)
+#define GPU_TX_PIN 5      // GPU output to CPU (connects to CPU_RX_PIN)
 #define GPU_CS_PIN 7
 #define GPU_DATA_READY_PIN 9
 #define GPU_VSYNC_PIN 10
 
 // SPI1 for CPU to APU communication
 #define CPU_APU_SCK_PIN 14
-#define CPU_APU_MOSI_PIN 15 // TX
-#define CPU_APU_MISO_PIN 16 // RX
+#define CPU_APU_TX_PIN 15  // CPU output to APU
+#define CPU_APU_RX_PIN 16  // CPU input from APU
+#define APU_RX_PIN 16      // APU input from CPU (connects to CPU_APU_TX_PIN)
+#define APU_TX_PIN 15      // APU output to CPU (connects to CPU_APU_RX_PIN)
 #define APU_CS_PIN 17
 #define APU_DATA_READY_PIN 19
 
@@ -55,6 +59,7 @@
 // #define GPU_DBG_SDA_PIN PICO_DEFAULT_I2C_SDA_PIN
 #define APU_DBG_SCL_PIN 21
 #define APU_DBG_SDA_PIN 20
+
 
 // Command IDs
 #define CMD_NOP 0x00

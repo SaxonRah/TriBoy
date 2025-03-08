@@ -97,8 +97,8 @@ void init_hardware() {
 
     // Configure SPI pins
     gpio_set_function(CPU_GPU_SCK_PIN, GPIO_FUNC_SPI);
-    gpio_set_function(CPU_GPU_MOSI_PIN, GPIO_FUNC_SPI);
-    gpio_set_function(CPU_GPU_MISO_PIN, GPIO_FUNC_SPI);
+    gpio_set_function(GPU_RX_PIN, GPIO_FUNC_SPI);  // Changed from CPU_GPU_MOSI_PIN
+    gpio_set_function(GPU_TX_PIN, GPIO_FUNC_SPI);  // Changed from CPU_GPU_MISO_PIN
 
     // Configure CS pin (active low, input from CPU)
     gpio_init(GPU_CS_PIN);

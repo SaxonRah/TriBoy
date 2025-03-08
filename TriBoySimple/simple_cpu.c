@@ -107,18 +107,18 @@ void init_hardware() {
     // Initialize SPI for GPU communication
     spi_init(CPU_GPU_SPI_PORT, SPI_FREQUENCY);
     gpio_set_function(CPU_GPU_SCK_PIN, GPIO_FUNC_SPI);
-    gpio_set_function(CPU_GPU_MOSI_PIN, GPIO_FUNC_SPI);
-    gpio_set_function(CPU_GPU_MISO_PIN, GPIO_FUNC_SPI);
+    gpio_set_function(CPU_TX_PIN, GPIO_FUNC_SPI);  // Changed from CPU_GPU_MOSI_PIN
+    gpio_set_function(CPU_RX_PIN, GPIO_FUNC_SPI);  // Changed from CPU_GPU_MISO_PIN
 
     gpio_init(GPU_CS_PIN);
     gpio_set_dir(GPU_CS_PIN, GPIO_OUT);
     gpio_put(GPU_CS_PIN, 1); // Deselect by default
 
     // Initialize SPI for APU communication
-    spi_init(APU_SPI_PORT, SPI_FREQUENCY);
+    spi_init(CPU_APU_SPI_PORT, SPI_FREQUENCY);
     gpio_set_function(CPU_APU_SCK_PIN, GPIO_FUNC_SPI);
-    gpio_set_function(CPU_APU_MOSI_PIN, GPIO_FUNC_SPI);
-    gpio_set_function(CPU_APU_MISO_PIN, GPIO_FUNC_SPI);
+    gpio_set_function(CPU_APU_TX_PIN, GPIO_FUNC_SPI);  // Changed from CPU_APU_MOSI_PIN
+    gpio_set_function(CPU_APU_RX_PIN, GPIO_FUNC_SPI);  // Changed from CPU_APU_MISO_PIN
 
     gpio_init(APU_CS_PIN);
     gpio_set_dir(APU_CS_PIN, GPIO_OUT);
