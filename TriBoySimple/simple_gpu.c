@@ -29,6 +29,9 @@ bool vblank_callback_enabled = false;
 volatile bool should_exit = false;
 bool spi_vsync_notification_enabled = false;
 
+// LCD display context
+lcd_context_t lcd;
+
 int main() {
     // Initialize stdio for print statements
     stdio_init_all();
@@ -112,38 +115,57 @@ void init_hardware() {
     gpio_set_dir(GPU_VSYNC_PIN, GPIO_OUT);
     gpio_put(GPU_VSYNC_PIN, 1);
 
-    // Initialize LCD display
-    lcd_init(GPU_DBG_I2C, GPU_DBG_SDA_PIN, GPU_DBG_SCL_PIN);
-    lcd_clear();
-    lcd_set_cursor(0, 0);
-    lcd_string("GPU Ready");
-    lcd_set_cursor(1, 0);
-    lcd_string("Waiting for CMD");
+    // Initialize LCD display with the context and specified address
+    bool lcd_init_success = lcd_init(&lcd, GPU_DBG_I2C, GPU_DBG_SDA_PIN, GPU_DBG_SCL_PIN, DBG_ADDR);
+    
+    if (lcd_init_success) {
+        lcd_clear(&lcd);
+        lcd_set_cursor(&lcd, 0, 0);
+        lcd_string(&lcd, "GPU Ready");
+        lcd_set_cursor(&lcd, 1, 0);
+        lcd_string(&lcd, "Waiting for CMD");
+    } else {
+        printf("WARNING: LCD initialization failed\n");
+    }
 
     printf("GPU hardware initialized\n");
 }
 
 void process_command(uint8_t cmd_id, const uint8_t* data, uint8_t length) {
+    // Update LCD with current command
+    char cmd_str[17];
+    snprintf(cmd_str, sizeof(cmd_str), "CMD: 0x%02X", cmd_id);
+    lcd_set_cursor(&lcd, 0, 0);
+    lcd_string(&lcd, cmd_str);
+    
     switch (cmd_id) {
         case CMD_NOP:
             printf("GPU: Processing NOP command\n");
+            lcd_set_cursor(&lcd, 1, 0);
+            lcd_string(&lcd, "NOP            ");
             // Even for NOP, send an acknowledgment
             send_ack_to_cpu(CMD_NOP, ERR_NONE);
             break;
 
         case CMD_RESET_GPU:
             printf("GPU: Processing RESET command\n");
+            lcd_set_cursor(&lcd, 1, 0);
+            lcd_string(&lcd, "RESET          ");
             // In a real implementation, we would reset GPU state here
             send_ack_to_cpu(CMD_RESET_GPU, ERR_NONE);
             break;
 
         case CMD_ENABLE_SPI_VSYNC:
             spi_vsync_notification_enabled = true;
+            lcd_set_cursor(&lcd, 1, 0);
+            lcd_string(&lcd, "VSYNC ON       ");
             send_ack_to_cpu(CMD_ENABLE_SPI_VSYNC, ERR_NONE);
             break;
 
         case CMD_DISABLE_SPI_VSYNC:
             spi_vsync_notification_enabled = false;
+            lcd_set_cursor(&lcd, 1, 0);
+            lcd_string(&lcd, "VSYNC OFF      ");
             send_ack_to_cpu(CMD_DISABLE_SPI_VSYNC, ERR_NONE);
             break;
 
@@ -151,11 +173,15 @@ void process_command(uint8_t cmd_id, const uint8_t* data, uint8_t length) {
             printf("GPU: Processing SET_VSYNC_CALLBACK command\n");
             // Enable/disable VSYNC callback
             vblank_callback_enabled = (data[0] != 0);
+            lcd_set_cursor(&lcd, 1, 0);
+            lcd_string(&lcd, vblank_callback_enabled ? "CALLBACK ON    " : "CALLBACK OFF   ");
             send_ack_to_cpu(CMD_SET_VSYNC_CALLBACK, ERR_NONE);
             break;
 
         case CMD_VSYNC_WAIT:
             printf("GPU: Processing VSYNC_WAIT command\n");
+            lcd_set_cursor(&lcd, 1, 0);
+            lcd_string(&lcd, "WAITING VSYNC  ");
             // In a real implementation, the response would be sent at next VSYNC
             // For this example, we'll just acknowledge now
             send_ack_to_cpu(CMD_VSYNC_WAIT, ERR_NONE);
@@ -163,12 +189,24 @@ void process_command(uint8_t cmd_id, const uint8_t* data, uint8_t length) {
 
         default:
             printf("GPU: Unknown command 0x%02X\n", cmd_id);
+            lcd_set_cursor(&lcd, 1, 0);
+            lcd_string(&lcd, "UNKNOWN CMD    ");
             send_ack_to_cpu(cmd_id, ERR_INVALID_COMMAND);
             break;
     }
 }
 
 void send_ack_to_cpu(uint8_t command_id, ErrorCode error_code) {
+    // Update LCD display
+    lcd_set_cursor(&lcd, 1, 0);
+    if (error_code == ERR_NONE) {
+        lcd_string(&lcd, "ACK SENT       ");
+    } else {
+        char err_str[17];
+        snprintf(err_str, sizeof(err_str), "ERR: 0x%02X      ", error_code);
+        lcd_string(&lcd, err_str);
+    }
+
     // Prepare acknowledgment packet
     uint8_t ack_packet[4] = {
         CMD_ACK,      // ACK command ID
@@ -220,6 +258,10 @@ void send_vsync_to_cpu() {
 
     // Method 2: SPI notification (backup, if enabled)
     if (spi_vsync_notification_enabled) {
+        // Update LCD
+        lcd_set_cursor(&lcd, 0, 0);
+        lcd_string(&lcd, "VSYNC NOTIFY   ");
+
         // Prepare VSYNC packet
         uint8_t vsync_packet[4] = {
             CMD_VSYNC,    // VSYNC command ID
@@ -251,6 +293,10 @@ void send_vsync_to_cpu() {
 
         // Lower DATA_READY signal
         gpio_put(GPU_DATA_READY_PIN, 0);
+        
+        // Update LCD after VSYNC sent
+        lcd_set_cursor(&lcd, 1, 0);
+        lcd_string(&lcd, "VSYNC SENT     ");
     }
 
     printf("GPU: Sent VSYNC notification to CPU\n");
