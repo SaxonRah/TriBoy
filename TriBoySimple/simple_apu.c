@@ -6,6 +6,7 @@
 #include "hardware/spi.h"
 #include "hardware/gpio.h"
 #include "common.h"
+#include "lcd_display.h"
 
 #ifndef tight_loop_contents
 #define tight_loop_contents() __asm volatile("nop \n")
@@ -18,6 +19,9 @@ void init_hardware();
 void process_command(uint8_t cmd_id, const uint8_t* data, uint8_t length);
 void send_ack_to_cpu(uint8_t command_id, ErrorCode error_code);
 void play_sound(uint8_t channel, uint8_t sound_id, uint8_t volume);
+
+// LCD display context
+lcd_context_t lcd;
 
 int main() {
     // Initialize stdio for print statements
@@ -95,19 +99,42 @@ void init_hardware() {
     gpio_set_dir(APU_DATA_READY_PIN, GPIO_OUT);
     gpio_put(APU_DATA_READY_PIN, 0);
 
+    // Initialize LCD display with the context and specified address
+    bool lcd_init_success = lcd_init(&lcd, APU_DBG_I2C, APU_DBG_SDA_PIN, APU_DBG_SCL_PIN, DBG_ADDR);
+    
+    if (lcd_init_success) {
+        lcd_clear(&lcd);
+        lcd_set_cursor(&lcd, 0, 0);
+        lcd_string(&lcd, "APU Ready");
+        lcd_set_cursor(&lcd, 1, 0);
+        lcd_string(&lcd, "Waiting for CMD");
+    } else {
+        printf("WARNING: LCD initialization failed\n");
+    }
+
     printf("APU hardware initialized\n");
 }
 
 void process_command(uint8_t cmd_id, const uint8_t* data, uint8_t length) {
+    // Update LCD with current command
+    char cmd_str[17];
+    snprintf(cmd_str, sizeof(cmd_str), "CMD: 0x%02X", cmd_id);
+    lcd_set_cursor(&lcd, 0, 0);
+    lcd_string(&lcd, cmd_str);
+    
     switch (cmd_id) {
         case CMD_NOP:
             printf("APU: Processing NOP command\n");
+            lcd_set_cursor(&lcd, 1, 0);
+            lcd_string(&lcd, "NOP            ");
             // Even for NOP, send an acknowledgment
             send_ack_to_cpu(CMD_NOP, ERR_NONE);
             break;
 
         case CMD_RESET_AUDIO:
             printf("APU: Processing RESET command\n");
+            lcd_set_cursor(&lcd, 1, 0);
+            lcd_string(&lcd, "RESET          ");
             // In a real implementation, we would reset APU state here
             send_ack_to_cpu(CMD_RESET_AUDIO, ERR_NONE);
             break;
@@ -116,6 +143,11 @@ void process_command(uint8_t cmd_id, const uint8_t* data, uint8_t length) {
             printf("APU: Processing PLAY_SOUND command\n");
             // Play the requested sound
             if (length >= 2) {
+                char sound_info[17];
+                snprintf(sound_info, sizeof(sound_info), "PLAY: %d CH: %d", data[1], data[0]);
+                lcd_set_cursor(&lcd, 1, 0);
+                lcd_string(&lcd, sound_info);
+                
                 play_sound(data[0], data[1], 255); // Full volume
             }
             send_ack_to_cpu(CMD_PLAY_SOUND, ERR_NONE);
@@ -123,12 +155,25 @@ void process_command(uint8_t cmd_id, const uint8_t* data, uint8_t length) {
 
         default:
             printf("APU: Unknown command 0x%02X\n", cmd_id);
+            lcd_set_cursor(&lcd, 1, 0);
+            lcd_string(&lcd, "UNKNOWN CMD    ");
             send_ack_to_cpu(cmd_id, ERR_INVALID_COMMAND);
             break;
     }
 }
 
 void send_ack_to_cpu(uint8_t command_id, ErrorCode error_code) {
+    // Update LCD display for ACK status
+    if (error_code == ERR_NONE) {
+        lcd_set_cursor(&lcd, 1, 0);
+        lcd_string(&lcd, "ACK SENT       ");
+    } else {
+        char err_str[17];
+        snprintf(err_str, sizeof(err_str), "ERR: 0x%02X      ", error_code);
+        lcd_set_cursor(&lcd, 1, 0);
+        lcd_string(&lcd, err_str);
+    }
+    
     // Prepare acknowledgment packet
     uint8_t ack_packet[4] = {
         CMD_ACK,      // ACK command ID
@@ -173,6 +218,12 @@ void play_sound(uint8_t channel, uint8_t sound_id, uint8_t volume) {
     // In a real implementation, this would trigger sound generation
     printf("APU: Playing sound %d on channel %d at volume %d\n", sound_id, channel, volume);
 
+    // Show playing status on LCD
+    char play_info[17];
+    snprintf(play_info, sizeof(play_info), "Playing...     ");
+    lcd_set_cursor(&lcd, 1, 0);
+    lcd_string(&lcd, play_info);
+    
     // For this example, we just simulate a sound being played
     sleep_ms(10);
 }
